@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # --- storage ---
-    database_url: str = "postgresql://repomind:repomind@localhost:5433/repomind"
+    database_url: str = "postgresql://repomind:repomind@localhost:5433/repomind_dev"
     data_dir: Path = PROJECT_ROOT / "data"
 
     # --- LLM ---

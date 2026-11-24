@@ -7,6 +7,8 @@ from pathlib import Path
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import ConnectionPool
 
 from repomind.config import Settings, get_settings
@@ -23,13 +25,33 @@ class SchemaMismatch(RuntimeError):
     pass
 
 
+def ensure_database(database_url: str) -> None:
+    """Create the target database if it does not exist yet (connects to the `postgres` maintenance DB)."""
+    try:
+        psycopg.connect(database_url, connect_timeout=10).close()
+        return
+    except psycopg.OperationalError as e:
+        if "does not exist" not in str(e):
+            raise
+    params = conninfo_to_dict(database_url)
+    name = params.get("dbname")
+    admin = make_conninfo(database_url, dbname="postgres")
+    with psycopg.connect(admin, autocommit=True) as conn:
+        try:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+            log.info("created database", extra={"database": name})
+        except psycopg.errors.DuplicateDatabase:
+            pass
+
+
 def ensure_schema(database_url: str, dim: int) -> None:
-    sql = _SCHEMA.read_text(encoding="utf-8").replace("{dim}", str(int(dim)))
+    ensure_database(database_url)
+    sql_text = _SCHEMA.read_text(encoding="utf-8").replace("{dim}", str(int(dim)))
     with psycopg.connect(database_url, autocommit=True) as conn:
         # Serialize concurrent bootstraps (api + 3 MCP servers start together).
         conn.execute("SELECT pg_advisory_lock(727001)")
         try:
-            conn.execute(sql)
+            conn.execute(sql_text)
             row = conn.execute(
                 "SELECT atttypmod FROM pg_attribute "
                 "WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"

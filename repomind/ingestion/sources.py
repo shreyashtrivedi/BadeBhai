@@ -83,7 +83,7 @@ def parse_source(source: str, repos_dir: Path, ref: str | None = None, name: str
         return RepoSource(
             "github", f"https://github.com/{full}.git", repos_dir / slug, name or full, ref, full
         )
-    if src.startswith(("http://", "https://", "git@", "ssh://")):
+    if src.startswith(("http://", "https://", "git@", "ssh://", "file://")):
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", src.rstrip("/").removesuffix(".git").split("/")[-1])
         return RepoSource("git", src, repos_dir / slug, name or slug, ref, None)
     raise ValueError(f"cannot resolve repository source {source!r}: not a path, owner/name, or git URL")

@@ -20,14 +20,14 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY repomind ./repomind
-RUN uv sync --frozen --no-dev
-
-# Bake the embedding model into the image so first start needs no download.
+# Bake the embedding model into the image (before the code, so code edits keep this layer cached).
 ARG PRELOAD_MODEL=BAAI/bge-small-en-v1.5
 RUN if [ -n "$PRELOAD_MODEL" ]; then \
       python -c "from sentence_transformers import SentenceTransformer as S; S('$PRELOAD_MODEL')"; \
     fi
 
+COPY repomind ./repomind
+RUN uv sync --frozen --no-dev
+
 EXPOSE 8000
-CMD ["repomind", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["repomind", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]

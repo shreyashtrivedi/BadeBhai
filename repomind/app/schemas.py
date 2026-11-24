@@ -81,6 +81,7 @@ class SubQuestion(BaseModel):
     status: Literal["pending", "sufficient", "weak", "insufficient"] = "pending"
     attempts: int = 0
     evidence_keys: list[str] = Field(default_factory=list)
+    calls: list[dict[str, Any]] = Field(default_factory=list)  # planned tool calls not yet executed
     note: str | None = None
 
 
@@ -114,3 +115,5 @@ class AskResponse(BaseModel):
     usage: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int = 0
     evidence: list[Evidence] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)

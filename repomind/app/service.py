@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
+from repomind.app.agent.runner import AgentRunner
 from repomind.app.naive import answer_naive
-from repomind.app.schemas import AskResponse
+from repomind.app.schemas import AskRequest, AskResponse
 from repomind.config import Settings, get_settings
 from repomind.db import repos as repo_db
 from repomind.db.pool import get_pool
@@ -22,6 +23,7 @@ async def ask_once(
     thread_id: str | None = None,
     settings: Settings | None = None,
     llm: LLMProvider | None = None,
+    runner: AgentRunner | None = None,
 ) -> AskResponse:
     s = settings or get_settings()
     pool = await asyncio.to_thread(get_pool, s)
@@ -34,6 +36,8 @@ async def ask_once(
         if mode == "naive":
             resp = await answer_naive(question, repo, llm=llm, pool=pool, embedder=embedder, settings=s)
         else:
-            raise NotImplementedError("agent mode arrives in Stage 2")
+            runner = runner or AgentRunner(s, llm, pool, embedder)
+            req = AskRequest(question=question, repo=repo_name, user_id=user_id, thread_id=thread_id)
+            resp = await runner.ask(req, repo)
     resp.usage = usage.summary()
     return resp

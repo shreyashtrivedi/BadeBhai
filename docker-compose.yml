@@ -1,5 +1,31 @@
 name: repomind
 
+# One command: `docker compose up --build`, then open http://localhost:8000
+# The demo repo (psf/requests @ v2.32.3) is indexed automatically on first start.
+
+x-app: &app
+  image: repomind:latest
+  pull_policy: never  # built once by the `api` service
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    DATABASE_URL: postgresql://repomind:repomind@db:5432/repomind
+    DATA_DIR: /data
+    MCP_TRANSPORT: http
+    MCP_CODE_SEARCH_URL: http://mcp-code:8101/mcp
+    MCP_GIT_HISTORY_URL: http://mcp-git:8102/mcp
+    MCP_DOCS_URL: http://mcp-docs:8103/mcp
+    LOG_JSON: "true"
+  volumes:
+    - repos:/data
+  restart: unless-stopped
+
+x-mcp-health: &mcp-health
+  interval: 5s
+  timeout: 3s
+  retries: 30
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -12,10 +38,54 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U repomind -d repomind"]
+      test: ["CMD-SHELL", "pg_isready -U repomind -d postgres"]
       interval: 3s
       timeout: 3s
       retries: 20
 
+  mcp-code:
+    <<: *app
+    command: ["python", "-m", "repomind.mcp_servers.code_search", "--host", "0.0.0.0", "--port", "8101"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      <<: *mcp-health
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8101), 2)"]
+
+  mcp-git:
+    <<: *app
+    command: ["python", "-m", "repomind.mcp_servers.git_history", "--host", "0.0.0.0", "--port", "8102"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      <<: *mcp-health
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8102), 2)"]
+
+  mcp-docs:
+    <<: *app
+    command: ["python", "-m", "repomind.mcp_servers.docs", "--host", "0.0.0.0", "--port", "8103"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      <<: *mcp-health
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8103), 2)"]
+
+  api:
+    <<: *app
+    build: .
+    pull_policy: build
+    command: ["repomind", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]
+    environment:
+      <<: *app-env
+      AUTO_INGEST_REPO: ${AUTO_INGEST_REPO:-psf/requests@v2.32.3}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db: { condition: service_healthy }
+      mcp-code: { condition: service_healthy }
+      mcp-git: { condition: service_healthy }
+      mcp-docs: { condition: service_healthy }
+
 volumes:
   pgdata:
+  repos:
