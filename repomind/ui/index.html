@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RepoMind</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1l7 7-7 7-7-7z' fill='%233b5bdb'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◆</span>
+      <span>RepoMind</span>
+      <span class="tagline">answers about a live codebase, with sources</span>
+    </div>
+    <div class="controls">
+      <label>Repo
+        <select id="repo"></select>
+      </label>
+      <label>User
+        <input id="user" type="text" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="mode">Mode
+        <select id="mode">
+          <option value="agent">Agent</option>
+          <option value="naive">Naive RAG</option>
+        </select>
+      </label>
+      <button id="new-thread" type="button" title="Start a new conversation thread">New thread</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Conversation">
+      <div id="messages" class="messages">
+        <div class="empty" id="empty">
+          <h2>Ask about the repository</h2>
+          <p>Every claim is cited and checked against the code. Try:</p>
+          <ul class="examples">
+            <li><button type="button">Where is authentication handled?</button></li>
+            <li><button type="button">Why was the retry logic added, and is it related to any open issues?</button></li>
+            <li><button type="button">What changed in src/requests between 2024-05-01 and 2024-05-31?</button></li>
+            <li><button type="button">Which files would I touch to add a new API endpoint helper like requests.get?</button></li>
+          </ul>
+        </div>
+      </div>
+      <form id="ask-form" class="composer">
+        <textarea id="question" rows="2" placeholder="Ask a question about the code, history, issues or docs…" required></textarea>
+        <button id="send" type="submit">Ask</button>
+      </form>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <aside class="side" aria-label="Details">
+      <nav class="tabs" role="tablist">
+        <button role="tab" class="tab active" data-tab="citations">Citations <span id="cite-count" class="count"></span></button>
+        <button role="tab" class="tab" data-tab="trace">Trace <span id="trace-count" class="count"></span></button>
+        <button role="tab" class="tab" data-tab="memory">Memory <span id="mem-count" class="count"></span></button>
+      </nav>
+      <div class="panel active" id="panel-citations">
+        <p class="hint">Citations from the latest answer appear here.</p>
+      </div>
+      <div class="panel" id="panel-trace">
+        <p class="hint">The agent's steps (sub-questions, MCP tool calls, grading, verification) stream here.</p>
+      </div>
+      <div class="panel" id="panel-memory">
+        <div class="panel-head">
+          <span>What RepoMind remembers about you for this repo</span>
+          <button id="clear-memory" type="button" class="link danger">Forget all</button>
+        </div>
+        <ul id="memories" class="memories"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

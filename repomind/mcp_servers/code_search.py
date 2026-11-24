@@ -53,7 +53,13 @@ def build_server(deps: Deps | None = None) -> MCPServer:
 
 
 def main() -> None:
-    run(build_server(), default_port=8101)
+    deps = Deps()
+    # Open the DB pool and load the embedding model at startup, not on the first search.
+    run(
+        build_server(deps),
+        default_port=8101,
+        warmup=lambda: (deps.pool, deps.embedder.embed_query("warm up")),
+    )
 
 
 if __name__ == "__main__":

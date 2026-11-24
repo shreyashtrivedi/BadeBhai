@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     HF_HOME=/models \
+    HF_HUB_OFFLINE=1 \
     DATA_DIR=/data \
     PATH="/app/.venv/bin:$PATH"
 
@@ -21,9 +22,11 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Bake the embedding model into the image (before the code, so code edits keep this layer cached).
+# The image runs with HF_HUB_OFFLINE=1; if you switch EMBEDDING_MODEL, set HF_HUB_OFFLINE=0 in .env
+# (or rebuild with --build-arg PRELOAD_MODEL=<model>).
 ARG PRELOAD_MODEL=BAAI/bge-small-en-v1.5
 RUN if [ -n "$PRELOAD_MODEL" ]; then \
-      python -c "from sentence_transformers import SentenceTransformer as S; S('$PRELOAD_MODEL')"; \
+      HF_HUB_OFFLINE=0 python -c "from sentence_transformers import SentenceTransformer as S; S('$PRELOAD_MODEL')"; \
     fi
 
 COPY repomind ./repomind

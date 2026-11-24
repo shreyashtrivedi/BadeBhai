@@ -7,10 +7,12 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -33,6 +35,7 @@ from repomind.log import get_logger, setup_logging
 from repomind.retrieval.hybrid import hybrid_search
 
 log = get_logger(__name__)
+UI_DIR = Path(__file__).resolve().parent.parent / "ui"
 
 
 class IngestRequest(BaseModel):
@@ -57,6 +60,8 @@ def create_app(
         st.settings = s
         st.pool = await asyncio.to_thread(get_pool, s)
         st.embedder = get_embedder(s)
+        # Load the embedding model now, not during the first question (memory search embeds the query).
+        await asyncio.to_thread(st.embedder.embed_query, "warm up")
         st.llm = llm or get_llm(s)
         st.jobs = {}
         st.indexer = Indexer(s, st.pool, st.embedder)
@@ -139,7 +144,11 @@ def create_app(
         from repomind.ingestion.sources import parse_source
 
         src = parse_source(source, s.repos_dir)
-        if await asyncio.to_thread(repo_db.get_repo, app.state.pool, src.name):
+        existing = await asyncio.to_thread(repo_db.get_repo, app.state.pool, src.name)
+        if existing is not None:
+            if existing.embedding_model != app.state.indexer.signature:  # new embedder / chunker version
+                log.info("index signature changed; re-syncing", extra={"repo": existing.name})
+                _start_job(app, "sync", lambda: app.state.indexer.sync(existing.name), repo=existing.name)
             return
         log.info("auto-ingesting", extra={"source": source})
         _start_job(app, "ingest", lambda: app.state.indexer.ingest(source), source=source)
@@ -306,5 +315,13 @@ def create_app(
             "webhook accepted", extra={"repo": repo.name, "after": push.after, "files": len(push.touched)}
         )
         return {"status": "accepted", "job_id": job_id, "repo": repo.name, "after": push.after}
+
+    # ------------------------------------------------------------------ web UI
+    if UI_DIR.exists():
+        app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
+
+        @app.get("/", include_in_schema=False)
+        async def root() -> RedirectResponse:
+            return RedirectResponse("/ui/")
 
     return app

@@ -88,7 +88,7 @@ def clamp(value: int | None, lo: int, hi: int, default: int) -> int:
     return max(lo, min(hi, int(value)))
 
 
-def run(server: MCPServer, default_port: int) -> None:
+def run(server: MCPServer, default_port: int, warmup: Callable[[], Any] | None = None) -> None:
     parser = argparse.ArgumentParser(description=f"RepoMind MCP server: {server.name}")
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="streamable-http")
     parser.add_argument("--host", default="127.0.0.1")
@@ -96,6 +96,8 @@ def run(server: MCPServer, default_port: int) -> None:
     args = parser.parse_args()
     s = get_settings()
     setup_logging(s.log_level, s.log_json)
+    if warmup is not None:
+        warmup()
     if args.transport == "stdio":
         server.run("stdio")
         return
