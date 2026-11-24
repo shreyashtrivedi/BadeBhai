@@ -266,6 +266,41 @@ def memories_clear(user: str = typer.Option(..., help="user id"), repo: str = ty
     typer.echo(f"deleted {_memory_store().delete_all(user, repo)}")
 
 
+@app.command("eval")
+def eval_cmd(
+    systems: str = typer.Option("naive,agent", help="comma-separated: naive, agent"),
+    limit: int = typer.Option(None, help="only the first N questions"),
+    ids: str = typer.Option(None, help="comma-separated question ids"),
+    retrieval_only: bool = typer.Option(False, help="hit@k of naive retrieval only (no LLM calls)"),
+    judge: bool = typer.Option(True, "--judge/--no-judge", help="LLM-judge answer correctness"),
+    golden: str = typer.Option(None, help="golden YAML (default: psf/requests v2.32.3)"),
+    mcp: str = typer.Option("inmemory", help="MCP transport for the agent: inmemory | http | stdio"),
+) -> None:
+    """Run the golden-question eval and write repomind/evals/reports/latest.md."""
+    _init()
+    from repomind import compat
+    from repomind.evals.golden import DEFAULT_GOLDEN
+    from repomind.evals.report import markdown, write
+    from repomind.evals.runner import EvalRunner
+    from repomind.llm import get_llm
+
+    s = get_settings().model_copy(update={"mcp_transport": mcp})
+    runner = EvalRunner(s, judge_llm=get_llm(s) if (judge and not retrieval_only) else None)
+    report = compat.run(
+        runner.evaluate(
+            golden or DEFAULT_GOLDEN,
+            tuple(x.strip() for x in systems.split(",") if x.strip()),
+            limit=limit,
+            ids=[x.strip() for x in ids.split(",")] if ids else None,
+            retrieval_only=retrieval_only,
+        )
+    )
+    raw, md = write(report)
+    typer.echo(markdown(report))
+    typer.echo(f"raw results: {raw}")
+    typer.echo(f"report: {md}")
+
+
 @app.command("reset-db")
 def reset_db(yes: bool = typer.Option(False, "--yes", help="skip confirmation")) -> None:
     """Drop all RepoMind tables (indexed data and memories)."""

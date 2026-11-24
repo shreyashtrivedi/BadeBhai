@@ -3,7 +3,7 @@
 An agentic RAG assistant that answers questions about a GitHub repository by combining code,
 commit history, issues/PRs and docs, with verified citations and per-user memory.
 
-> Work in progress (Stage 3 of 5). See [docs/PLAN.md](docs/PLAN.md) for the build plan.
+> Work in progress (Stage 4 of 5). See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## One-command start (Docker)
 
@@ -64,6 +64,53 @@ The graph: `load_memory -> decompose -> retrieve (parallel MCP calls) -> grade_e
   (CLI: `repomind memories list|delete|clear`).
 - Thread state (short-term memory) lives in the LangGraph Postgres checkpointer.
 - Tracing: set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`; otherwise structured JSON logs.
+
+## Evaluation
+
+**Golden set:** 38 questions on `psf/requests` pinned at `v2.32.3`
+([repomind/evals/golden/requests_v2_32_3.yaml](repomind/evals/golden/requests_v2_32_3.yaml)):
+14 location, 5 how-it-works, 7 history/why, 2 live-issue, 4 change-planning, 3 docs and
+3 unanswerable questions. Each has expected files / commit shas and a reference answer that was
+checked against the snapshot (source, git history, HISTORY.md).
+
+**Metrics:** retrieval hit@k (an expected file, commit or issue among the top-k evidence items),
+citation validity (verified / total citations), whether the answer cites an expected source,
+LLM-judge correctness (0-1 against the reference), "insufficient evidence" accuracy on unanswerable
+questions, over-abstention, latency p50/p95, cost and LLM / tool calls per question.
+
+```bash
+uv run repomind eval --retrieval-only        # no LLM calls: hit@k of the naive retrieval
+uv run repomind eval --limit 5               # both systems + judge on 5 questions (needs ANTHROPIC_API_KEY)
+uv run repomind eval                         # full run; writes repomind/evals/reports/latest.md
+```
+
+### Results
+
+| Metric | Naive RAG (1 hybrid search + 1 LLM call) | Agentic pipeline |
+|---|---|---|
+| Retrieval hit@1 | 71.4% | not run yet |
+| Retrieval hit@3 | 91.4% | not run yet |
+| Retrieval hit@5 | 91.4% | not run yet |
+| Retrieval hit@10 | 91.4% | not run yet |
+| Citation validity | not run yet | not run yet |
+| LLM-judge correctness | not run yet | not run yet |
+| Insufficient-evidence accuracy | not run yet | not run yet |
+| Latency p50 / p95 | not run yet | not run yet |
+| Cost per question | not run yet | not run yet |
+
+Only the LLM-free rows have been measured so far: the build machine had no `ANTHROPIC_API_KEY`,
+and these cells are left empty rather than estimated. Run `uv run repomind eval` to fill them in
+(the agent column needs the LLM even for retrieval, because the planner chooses the tool calls).
+
+Notes on the measured rows:
+- The naive hit@k ceiling is 91.4% because 3 of the 35 answerable questions can only be answered
+  from commits or live issues, which a code/doc index cannot return; the agent reaches them
+  through the `git_history` MCP server.
+- hit@1 went from 42.9% to 71.4% after two changes: presenting code and doc hits interleaved
+  instead of sorted by score (docs used to bury code for "where is X" questions), and grouping runs
+  of tiny definitions (for example the 25 small exception classes) into one chunk
+  ([before](repomind/evals/reports/20261124-230021-before-interleave.md),
+  [after](repomind/evals/reports/latest.md)).
 
 ## Tests
 

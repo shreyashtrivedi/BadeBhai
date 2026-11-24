@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 from repomind.ingestion.languages import TS_SPECS, TSSpec, get_parser
 
+# Bump when chunk boundaries change: indexes built with another version are re-chunked on next sync.
+CHUNKER_VERSION = 2
+
 
 @dataclass
 class Chunk:
@@ -147,21 +150,60 @@ class Chunker:
     def _walk(self, nodes, spec: TSSpec, parent: str | None, out, ctx: _Ctx, header):
         group_type = "module" if parent is None else "body"
         pending: list[tuple[int, int, bool]] = [(*header, False)] if header else []
+        run: list[tuple[int, int, str, str]] = []  # consecutive tiny definitions awaiting grouping
+
+        def flush_run() -> None:
+            self._flush_run(run, out)
+            run.clear()
+
         for node in nodes:
             s, e = self._rows(node)
             resolved = self._resolve_def(node, spec)
             if resolved is None:
                 is_lead = "comment" in node.type or node.type in ("attribute_item", "decorator", "annotation")
+                if not is_lead:
+                    flush_run()  # real code between definitions breaks a run of tiny ones
                 pending.append((s, e, is_lead))
                 continue
             start = s
             # Attach directly-preceding comments / attributes (doc comments) to the definition.
             while pending and pending[-1][2] and pending[-1][1] >= start - 1:
                 start = pending.pop()[0]
+            if pending:
+                flush_run()
             self._flush(pending, parent, group_type, out)
             pending = []
+            if e - start + 1 <= self.SMALL_DEF_LINES:
+                name = self._name(resolved[0]) or resolved[1]
+                run.append((start, e, f"{parent}.{name}" if parent else name, resolved[1]))
+                continue
+            flush_run()
             self._emit_def(resolved[0], resolved[1], start, e, spec, parent, out, ctx)
+        flush_run()
         self._flush(pending, parent, group_type, out)
+
+    SMALL_DEF_LINES = 6
+    MIN_RUN = 3
+
+    def _flush_run(self, run: list[tuple[int, int, str, str]], out) -> None:
+        """Emit tiny definitions; runs of >= MIN_RUN are grouped (e.g. 20 two-line exception classes)."""
+        if len(run) < self.MIN_RUN:
+            out.extend(run)
+            return
+        budget = max(self.max_lines // 2, self.SMALL_DEF_LINES)
+        group: list[tuple[int, int, str, str]] = []
+        for item in run:
+            if group and item[1] - group[0][0] + 1 > budget:
+                out.append(self._group(group))
+                group = []
+            group.append(item)
+        if group:
+            out.append(self._group(group) if len(group) > 1 else group[0])
+
+    @staticmethod
+    def _group(group: list[tuple[int, int, str, str]]) -> tuple[int, int, str, str]:
+        names = ", ".join(g[2] for g in group)
+        return (group[0][0], group[-1][1], names[:300], "definitions")
 
     def _emit_def(self, defn, sym_type: str, start: int, end: int, spec: TSSpec, parent, out, ctx):
         name = self._name(defn) or sym_type

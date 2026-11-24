@@ -1,0 +1,370 @@
+# Golden questions for psf/requests pinned at v2.32.3 (commit 0e322af8, 2024-05-29).
+# Facts below were checked against that snapshot (file contents, git history, HISTORY.md).
+#
+# Fields
+#   expected_files    retrieval/citation "hit" if any of these paths is retrieved / cited
+#   expected_commits  ... or any commit whose sha starts with one of these prefixes
+#   expected_issue    true: hit if any GitHub issue / PR is cited (issues are live data, so no fixed numbers)
+#   answerable        false: the right behaviour is to say there is insufficient evidence
+#   reference         key facts the LLM judge compares the answer against
+repo: psf/requests
+ref: v2.32.3
+commit: 0e322af87745eff34caffe4df68456ebc20d9068
+
+questions:
+  # ---------------------------------------------------------------- location
+  - id: loc-auth
+    category: location
+    question: Where is authentication handled?
+    expected_files: [src/requests/auth.py]
+    reference: >
+      Auth handlers live in src/requests/auth.py: AuthBase, HTTPBasicAuth (Basic header via _basic_auth_str),
+      HTTPProxyAuth and HTTPDigestAuth. Auth is attached when a request is prepared
+      (PreparedRequest.prepare_auth in models.py); Session.prepare_request falls back to .netrc credentials,
+      and SessionRedirectMixin.rebuild_auth / should_strip_auth in sessions.py handle auth on redirects.
+
+  - id: loc-retries
+    category: location
+    question: Where is the retry logic implemented?
+    expected_files: [src/requests/adapters.py]
+    reference: >
+      In src/requests/adapters.py. HTTPAdapter.__init__ takes max_retries (default 0) and converts it to a
+      urllib3 Retry object (Retry(0, read=False) by default, or Retry.from_int). HTTPAdapter.send passes it to
+      urllib3 and maps MaxRetryError to ConnectionError, RetryError, ProxyError or SSLError.
+
+  - id: loc-redirects
+    category: location
+    question: How does requests follow redirects, and where is that code?
+    expected_files: [src/requests/sessions.py]
+    reference: >
+      SessionRedirectMixin in src/requests/sessions.py: get_redirect_target reads the Location header,
+      resolve_redirects loops over redirects (up to max_redirects, raising TooManyRedirects), rebuilding the
+      method (rebuild_method, e.g. 303 -> GET), auth (rebuild_auth) and proxies (rebuild_proxies), and
+      Session.send calls it when allow_redirects is true.
+
+  - id: loc-cookies
+    category: location
+    question: Where are cookies from responses extracted and stored for a session?
+    expected_files: [src/requests/cookies.py, src/requests/sessions.py]
+    reference: >
+      src/requests/cookies.py: extract_cookies_to_jar uses MockRequest/MockResponse adapters so the stdlib
+      cookie jar can extract Set-Cookie headers into a RequestsCookieJar. Session.send and resolve_redirects
+      call extract_cookies_to_jar so session.cookies persists cookies; merge_cookies combines jars.
+
+  - id: loc-proxy-env
+    category: location
+    question: Where does requests read proxy settings from environment variables?
+    expected_files: [src/requests/utils.py, src/requests/sessions.py]
+    reference: >
+      src/requests/utils.py: get_environ_proxies (uses urllib getproxies and should_bypass_proxies / no_proxy),
+      select_proxy and resolve_proxies. Session.merge_environment_settings in sessions.py applies them when
+      trust_env is true.
+
+  - id: loc-encoding
+    category: location
+    question: How does Response.text decide which character encoding to use?
+    expected_files: [src/requests/models.py]
+    reference: >
+      Response.text in src/requests/models.py uses Response.encoding (from the Content-Type charset via
+      utils.get_encoding_from_headers); if it is None it falls back to apparent_encoding, which uses
+      chardet/charset_normalizer when available (utf-8 otherwise), then decodes with errors="replace".
+
+  - id: loc-json
+    category: location
+    question: Where is Response.json implemented and what does it raise for invalid JSON?
+    expected_files: [src/requests/models.py]
+    reference: >
+      Response.json in src/requests/models.py; it guesses the UTF encoding when none is set and raises
+      requests.exceptions.JSONDecodeError (RequestsJSONDecodeError, defined in exceptions.py, subclassing
+      InvalidJSONError and the stdlib/simplejson JSONDecodeError) when decoding fails.
+
+  - id: loc-timeout
+    category: location
+    question: Where are connect and read timeouts applied to a request?
+    expected_files: [src/requests/adapters.py]
+    reference: >
+      HTTPAdapter.send in src/requests/adapters.py converts the timeout argument into a urllib3 Timeout
+      (imported as TimeoutSauce): a (connect, read) tuple or a single number for both; urllib3 timeout errors
+      are mapped to ConnectTimeout / ReadTimeout.
+
+  - id: loc-ssl-verify
+    category: location
+    question: Where is TLS certificate verification configured for connections?
+    expected_files: [src/requests/adapters.py]
+    reference: >
+      src/requests/adapters.py: HTTPAdapter.cert_verify sets cert_reqs/ca_certs or ca_cert_dir and client
+      certs; _urllib3_request_context and get_connection_with_tls_context build per-request pool key
+      parameters from verify/cert (2.32.0+), using a default SSLContext when verify=True.
+
+  - id: loc-hooks
+    category: location
+    question: How do request hooks work and where are they dispatched?
+    expected_files: [src/requests/hooks.py]
+    reference: >
+      src/requests/hooks.py defines HOOKS = ["response"], default_hooks and dispatch_hook, which calls each
+      registered hook with the response and replaces it if the hook returns a value. RequestHooksMixin
+      (models.py) registers hooks and Session.send dispatches the response hook.
+
+  - id: loc-case-insensitive
+    category: location
+    question: Which data structure stores HTTP headers case-insensitively?
+    expected_files: [src/requests/structures.py]
+    reference: >
+      CaseInsensitiveDict in src/requests/structures.py, a MutableMapping that stores keys lower-cased for
+      lookup while remembering the original casing; used for request and response headers.
+
+  - id: loc-user-agent
+    category: location
+    question: Where is the default User-Agent header built?
+    expected_files: [src/requests/utils.py]
+    reference: >
+      utils.default_user_agent returns "python-requests/<version>", and utils.default_headers builds the
+      default headers (User-Agent, Accept-Encoding, Accept, Connection) used by Session.
+
+  - id: loc-prepare-body
+    category: location
+    question: Where does requests encode the request body for JSON, form data and file uploads?
+    expected_files: [src/requests/models.py]
+    reference: >
+      PreparedRequest.prepare_body in src/requests/models.py: json= is serialized with complexjson and sets
+      Content-Type application/json; files use RequestEncodingMixin._encode_files (multipart/form-data);
+      dict/tuple data uses _encode_params (application/x-www-form-urlencoded); streams use chunked or
+      Content-Length.
+
+  - id: loc-netrc
+    category: location
+    question: Where does requests load credentials from a .netrc file?
+    expected_files: [src/requests/utils.py, src/requests/sessions.py]
+    reference: >
+      utils.get_netrc_auth reads ~/.netrc or ~/_netrc (or $NETRC) and returns (login, password) for the
+      host; Session.prepare_request uses it when no auth is given and trust_env is true, and rebuild_auth
+      re-applies it on redirects.
+
+  # ---------------------------------------------------------------- how it works
+  - id: how-strip-auth
+    category: how
+    question: When does requests strip the Authorization header during a redirect?
+    expected_files: [src/requests/sessions.py]
+    reference: >
+      SessionRedirectMixin.should_strip_auth in sessions.py returns true when the hostname changes, or when
+      the scheme or port changes, except for an http->https upgrade on the same host with default ports;
+      rebuild_auth then deletes the Authorization header.
+
+  - id: how-session-adapter
+    category: how
+    question: How does a Session decide which transport adapter handles a URL?
+    expected_files: [src/requests/sessions.py]
+    reference: >
+      Session.get_adapter iterates the mounted adapters (an OrderedDict kept sorted by prefix length, longest
+      first, by Session.mount) and returns the first whose prefix matches the URL case-insensitively, raising
+      InvalidSchema if none matches. Defaults: https:// and http:// map to HTTPAdapter.
+
+  - id: how-streaming
+    category: how
+    question: How does streaming a response body with iter_content work?
+    expected_files: [src/requests/models.py]
+    reference: >
+      Response.iter_content in models.py yields chunks from urllib3's raw.stream (decode_content=True),
+      mapping ProtocolError/DecodeError/ReadTimeoutError to ChunkedEncodingError/ContentDecodingError/
+      ConnectionError; it raises StreamConsumedError if the content was already consumed and can decode to
+      text with decode_unicode=True.
+
+  - id: how-pool
+    category: how
+    question: How are connection pools created and reused?
+    expected_files: [src/requests/adapters.py]
+    reference: >
+      HTTPAdapter.init_poolmanager creates a urllib3 PoolManager (pool_connections, pool_maxsize,
+      pool_block); proxy_manager_for caches ProxyManagers; get_connection_with_tls_context picks a pool via
+      connection_from_host with pool key attributes from build_connection_pool_key_attributes.
+
+  - id: how-exceptions
+    category: how
+    question: What is the exception hierarchy for connection errors and timeouts?
+    expected_files: [src/requests/exceptions.py]
+    reference: >
+      In exceptions.py everything derives from RequestException (an IOError). ConnectionError has
+      subclasses ProxyError, SSLError and ConnectTimeout; Timeout has ConnectTimeout (also a ConnectionError)
+      and ReadTimeout.
+
+  # ---------------------------------------------------------------- history / why
+  - id: why-max-retries
+    category: history
+    question: Why and when was the max_retries option added to HTTPAdapter?
+    expected_commits: ["36dcce1a"]
+    expected_files: [src/requests/adapters.py]
+    sources: [commits, code]
+    reference: >
+      Commit 36dcce1a (2013-04-12, Daniel Lindsley) "Changed HTTPAdapter to allow max retries to be specified
+      when initializing", merged via PR #1309 (better-max-retries), so users can configure retries per
+      adapter instead of a fixed module-level default.
+
+  - id: why-strip-auth-root
+    category: history
+    question: Why does requests strip the Authorization header when the scheme changes, and not only when the host changes?
+    expected_commits: ["3331e2ae"]
+    expected_files: [src/requests/sessions.py, HISTORY.md]
+    sources: [commits, code]
+    reference: >
+      Commit 3331e2ae (2018-06-28) "Strip Authorization header whenever root URL changes": stripping only on
+      host change leaked credentials on an https -> http redirect (issue #4716, CVE-2018-18074). Following
+      RFC 7235, the header is stripped when the scheme, host or port changes (fixed in 2.20.0).
+
+  - id: why-2-32-0-security
+    category: history
+    question: What security issue was fixed in 2.32.0, and which code changed for it?
+    expected_files: [HISTORY.md, src/requests/adapters.py]
+    sources: [docs, code]
+    reference: >
+      2.32.0 (2024-05-20) fixed an issue where verify=False on the first request of a Session made later
+      requests to the same origin skip certificate verification (GHSA-9wx4-h78v-vm56, CVE-2024-35195).
+      adapters.py now builds pool keys per request from verify/cert (_urllib3_request_context,
+      get_connection_with_tls_context).
+
+  - id: why-proxy-auth-2-31
+    category: history
+    question: Why was Proxy-Authorization handling changed in 2.31.0?
+    expected_files: [HISTORY.md, src/requests/sessions.py]
+    sources: [docs, code]
+    reference: >
+      Versions 2.3.0-2.30.0 could forward the Proxy-Authorization header to the destination server when
+      following HTTPS redirects with proxy credentials in the proxy URL (CVE-2023-32681,
+      GHSA-j8r2-6x86-q33q). 2.31.0 (2023-05-22) fixed rebuild_proxies in sessions.py.
+
+  - id: hist-may-2024
+    category: history
+    question: What changed in src/requests during May 2024?
+    expected_commits: ["9a40d127", "555b870e", "aa1461b6", "92075b33", "a62a2d35", "b1d73ddb", "e1887993"]
+    sources: [commits]
+    reference: >
+      Releases 2.32.0-2.32.3: avoid reloading root certificates / reuse a default SSLContext (#6667),
+      optional character-detection dependencies, the verify=False CVE fix, renaming _get_connection to
+      get_connection_with_tls_context with a deprecation warning on get_connection (2.32.2), allowing
+      overrides of pool key params, not using the default SSLContext with custom poolmanager kwargs, and not
+      creating it when the ssl module is missing (2.32.3, #6724).
+
+  - id: why-get-connection-deprecated
+    category: history
+    question: Why is HTTPAdapter.get_connection deprecated?
+    expected_files: [src/requests/adapters.py, HISTORY.md]
+    expected_commits: ["aa1461b6", "92075b33"]
+    sources: [code, commits, docs]
+    reference: >
+      After the 2.32.0 CVE fix, _get_connection was renamed to the public get_connection_with_tls_context
+      (2.32.2) so custom adapters could migrate; get_connection does not receive TLS settings and now emits
+      a DeprecationWarning, being deprecated for Requests >= 2.32.0.
+
+  - id: hist-retry-consistency
+    category: history
+    question: When was retry handling changed to be consistent with the documentation, and by whom?
+    expected_commits: ["2bc7762c"]
+    sources: [commits]
+    reference: >
+      Commit 2bc7762c on 2014-09-10 by Ian Cordasco, "Update how we handle retries to be consistent with
+      documentation", which changed how HTTPAdapter builds its urllib3 Retry from max_retries.
+
+  # ---------------------------------------------------------------- live issues
+  - id: issues-retries
+    category: issues
+    question: Are there GitHub issues or pull requests discussing retries or max_retries?
+    expected_issue: true
+    sources: [issues]
+    reference: >
+      Yes: there are many issues/PRs about retries (for example retry behaviour with urllib3 Retry, hooks on
+      retry, or retrying on truncated bodies). A good answer cites at least one specific issue or PR.
+
+  - id: issues-digest
+    category: issues
+    question: Have bugs been reported on GitHub about HTTPDigestAuth?
+    expected_issue: true
+    expected_files: [src/requests/auth.py]
+    sources: [issues, code]
+    reference: >
+      Yes: GitHub has issues about digest authentication (for example qop handling, non-ASCII credentials or
+      redirects); the implementation is HTTPDigestAuth in src/requests/auth.py. A good answer cites at least
+      one specific issue or PR.
+
+  # ---------------------------------------------------------------- change planning
+  - id: plan-new-auth
+    category: planning
+    question: Which files would I touch to add a new authentication scheme such as bearer-token auth?
+    expected_files: [src/requests/auth.py, docs/user/authentication.rst]
+    reference: >
+      Add an AuthBase subclass whose __call__ sets the Authorization header in src/requests/auth.py
+      (optionally export it), document it in docs/user/authentication.rst (custom/new forms of
+      authentication), and add tests (tests/test_requests.py).
+
+  - id: plan-new-method
+    category: planning
+    question: Which files would I change to add a new top-level helper like requests.get for a new HTTP method?
+    expected_files: [src/requests/api.py, src/requests/sessions.py]
+    reference: >
+      Add a function in src/requests/api.py that calls request(<method>, ...), a matching Session method in
+      src/requests/sessions.py that calls self.request, expose it in src/requests/__init__.py, and add docs
+      (docs/api.rst) and tests.
+
+  - id: plan-custom-adapter
+    category: planning
+    question: How would I write a custom transport adapter with automatic retries, and which files are relevant?
+    expected_files: [src/requests/adapters.py, docs/user/advanced.rst]
+    reference: >
+      Subclass HTTPAdapter (src/requests/adapters.py) or pass max_retries=urllib3 Retry(...) to it and mount
+      it on a Session for a URL prefix; docs/user/advanced.rst has "Transport Adapters" and
+      "Example: Automatic Retries" sections.
+
+  - id: plan-new-exception
+    category: planning
+    question: Where would I add a new exception type for a new kind of network failure?
+    expected_files: [src/requests/exceptions.py, src/requests/adapters.py]
+    reference: >
+      Define it in src/requests/exceptions.py under RequestException (or ConnectionError), and raise it
+      where urllib3 errors are translated in HTTPAdapter.send in src/requests/adapters.py.
+
+  # ---------------------------------------------------------------- docs / usage
+  - id: doc-session-objects
+    category: docs
+    question: How can I persist settings like headers across multiple requests?
+    expected_files: [docs/user/advanced.rst, src/requests/sessions.py]
+    sources: [docs, code]
+    reference: >
+      Use a Session object (docs/user/advanced.rst "Session Objects"): session-level headers, auth, cookies
+      and params are merged into each request (merge_setting in sessions.py); method-level values override
+      session values.
+
+  - id: doc-install
+    category: docs
+    question: How do I install requests according to the docs?
+    expected_files: [docs/user/install.rst, README.md]
+    sources: [docs]
+    reference: >
+      With pip: `python -m pip install requests` (docs/user/install.rst, README); the source can also be
+      cloned from GitHub and installed.
+
+  - id: doc-timeouts
+    category: docs
+    question: What does the documentation recommend about setting timeouts?
+    expected_files: [docs/user/advanced.rst, docs/user/quickstart.rst]
+    sources: [docs]
+    reference: >
+      Nearly all production code should pass a timeout; requests does not time out by default. A single
+      number applies to both connect and read; a (connect, read) tuple sets them separately; the connect
+      timeout is often set slightly above a multiple of 3 seconds (TCP retransmission window).
+
+  # ---------------------------------------------------------------- unanswerable
+  - id: none-graphql
+    category: unanswerable
+    question: Where is the GraphQL client implemented in this repository?
+    answerable: false
+    reference: Requests has no GraphQL client. The assistant should say it found no evidence instead of inventing one.
+
+  - id: none-websocket
+    category: unanswerable
+    question: How does requests manage WebSocket connections and their heartbeat interval?
+    answerable: false
+    reference: Requests does not implement WebSockets. The assistant should report insufficient evidence.
+
+  - id: none-http3
+    category: unanswerable
+    question: Which module implements HTTP/3 over QUIC support?
+    answerable: false
+    reference: Requests has no HTTP/3 or QUIC support. The assistant should report insufficient evidence.

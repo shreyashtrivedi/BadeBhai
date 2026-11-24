@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from itertools import zip_longest
 
 from repomind.app.citations import verify_answer
 from repomind.app.evidence import evidence_from_hit
@@ -44,7 +45,8 @@ async def answer_naive(
             hybrid_search, pool, embedder, repo.id, question, k=k_doc, kinds=("doc",), settings=settings
         ),
     )
-    hits = code_hits + doc_hits
+    # Interleave (best code, best doc, ...) so neither source buries the other.
+    hits = [h for pair in zip_longest(code_hits, doc_hits) for h in pair if h is not None]
     evidence = [evidence_from_hit(h, repo) for h in hits]
     trace.append(
         TraceStep(

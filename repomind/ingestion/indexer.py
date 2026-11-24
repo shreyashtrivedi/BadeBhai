@@ -18,7 +18,7 @@ from repomind.config import Settings, get_settings
 from repomind.db import repos as repo_db
 from repomind.db.pool import get_pool
 from repomind.embeddings import Embedder, get_embedder
-from repomind.ingestion.chunker import Chunk, Chunker
+from repomind.ingestion.chunker import CHUNKER_VERSION, Chunk, Chunker
 from repomind.ingestion.filters import list_candidate_files, read_text_file
 from repomind.ingestion.languages import classify
 from repomind.ingestion.secrets import redact
@@ -77,6 +77,8 @@ class Indexer:
         self.settings = settings or get_settings()
         self.pool = pool or get_pool(self.settings)
         self.embedder = embedder or get_embedder(self.settings)
+        # Stored per repo; a different embedding model or chunker version forces a full re-index.
+        self.signature = f"{self.embedder.name}+chunker-v{CHUNKER_VERSION}"
         self.chunker = Chunker(
             self.settings.chunk_max_lines, self.settings.window_lines, self.settings.window_overlap
         )
@@ -152,11 +154,11 @@ class Indexer:
     ) -> None:
         current = self._current_files(repo)
         known = repo_db.file_hashes(self.pool, repo.id)
-        force = bool(known) and repo.embedding_model not in (None, self.embedder.name)
+        force = bool(known) and repo.embedding_model not in (None, self.signature)
         if force:
             log.warning(
-                "embedding model changed; re-embedding everything",
-                extra={"old": repo.embedding_model, "new": self.embedder.name},
+                "embedding model or chunker changed; re-indexing everything",
+                extra={"old": repo.embedding_model, "new": self.signature},
             )
         removed = set(known) - current
         to_check = current if (candidates is None or force) else (candidates & current)
@@ -196,7 +198,7 @@ class Indexer:
             report.files_removed = len(removed)
             report.changed_paths.extend(sorted(removed))
         report.commit = head_commit(Path(repo.local_path))
-        repo_db.mark_indexed(self.pool, repo.id, report.commit, self.embedder.name)
+        repo_db.mark_indexed(self.pool, repo.id, report.commit, self.signature)
 
     def _write(self, repo_id: int, files: list[_PendingFile], report: IndexReport) -> None:
         all_chunks = [c for f in files for c in f.chunks]

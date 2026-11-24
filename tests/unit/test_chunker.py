@@ -16,7 +16,8 @@ class Big:
 
 '''
     + "\n".join(
-        f"    def method_{i}(self):\n        x = {i}\n        y = x + 1\n        return y\n"
+        f"    def method_{i}(self):\n        x = {i}\n        y = x + 1\n        z = y * 2\n"
+        f"        w = z - 1\n        v = w + x\n        return v\n"
         for i in range(30)
     )
     + """
@@ -55,6 +56,20 @@ def test_large_class_is_split_into_methods_with_qualified_names():
     for c in chunks:
         _lines_match(c, PY)
         assert c.end_line - c.start_line + 1 <= 40
+
+
+def test_runs_of_tiny_definitions_are_grouped():
+    classes = "".join(f"class E{i}(Exception):\n    pass\n\n\n" for i in range(5))
+    text = f"import x\n\n\n{classes}def standalone():\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    e = 5\n    return a\n"
+    chunks = Chunker().chunk("exc.py", text, "code", "python")
+    grouped = [c for c in chunks if c.symbol_type == "definitions"]
+    assert len(grouped) == 1 and grouped[0].symbol == "E0, E1, E2, E3, E4"
+    assert "standalone" in [c.symbol for c in chunks]  # 7 lines: not tiny, stays separate
+    for c in chunks:
+        _lines_match(c, text)
+    # two tiny definitions in a row are not a run
+    pair = Chunker().chunk("p.py", "def a():\n    return 1\n\n\ndef b():\n    return 2\n", "code", "python")
+    assert [c.symbol for c in pair] == ["a", "b"]
 
 
 def test_huge_function_falls_back_to_windows_with_symbol():
