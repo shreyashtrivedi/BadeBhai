@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local data: cloned repos, model caches, eval scratch
+data/
+.hf_cache/
+repomind/evals/reports/raw/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
