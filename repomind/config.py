@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +20,8 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     llm_provider: str = "anthropic"  # anthropic | fake
+    # Read from .env too (pydantic-settings does not export .env into os.environ, so pass it explicitly).
+    anthropic_api_key: SecretStr | None = None
     llm_model: str = "claude-opus-5-5"
     # Used for decompose / grade / rewrite / memory extraction. Defaults to the main model;
     # set to e.g. claude-haiku-5-5 to cut cost.
@@ -82,8 +84,11 @@ class Settings(BaseSettings):
     memory_top_k: int = 5
     memory_min_weight: float = 0.15
 
-    # --- tracing ---
-    langsmith_tracing: bool = Field(default=False, alias="LANGSMITH_TRACING")
+    # --- tracing (LangSmith reads os.environ; configure_tracing() exports these) ---
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "repomind"
+    langsmith_endpoint: str | None = None
     log_level: str = "INFO"
     log_json: bool = True
 
@@ -99,3 +104,17 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def configure_tracing(s: Settings) -> bool:
+    """Export LangSmith settings (possibly from .env) so LangGraph / langsmith pick them up."""
+    import os
+
+    if not (s.langsmith_tracing and s.langsmith_api_key):
+        return False
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    os.environ.setdefault("LANGSMITH_API_KEY", s.langsmith_api_key.get_secret_value())
+    os.environ.setdefault("LANGSMITH_PROJECT", s.langsmith_project)
+    if s.langsmith_endpoint:
+        os.environ.setdefault("LANGSMITH_ENDPOINT", s.langsmith_endpoint)
+    return True

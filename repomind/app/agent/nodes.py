@@ -4,21 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.config import get_stream_writer
 
-from repomind.app.agent.planning import DecomposeOutput, default_calls, validate_calls
+from repomind.app.agent.planning import (
+    DecomposeOutput,
+    GradeOutput,
+    RewriteOutput,
+    default_calls,
+    validate_calls,
+)
 from repomind.app.agent.state import HISTORY_TURNS, AgentState, deps_from
 from repomind.app.citations import verify_answer
 from repomind.app.evidence import evidence_from_tool
 from repomind.app.mcp_client import ToolBudgetExceeded
+from repomind.app.memory.policy import ExtractionOutput, apply_candidates, worth_extracting
 from repomind.app.oracle import RepoOracle
 from repomind.app.prompts import load_prompt
 from repomind.app.schemas import Evidence, SubQuestion
-from repomind.app.security import new_tag, render_evidence_list
+from repomind.app.security import new_tag, render_evidence, render_evidence_list
 from repomind.llm.base import LLMError, LLMUnavailable
 from repomind.log import get_logger
 
@@ -136,6 +144,7 @@ async def retrieve(state: AgentState, config) -> dict:
 
     async def run(sq: SubQuestion, call: dict) -> tuple[SubQuestion, dict, dict]:
         args = {**call["args"], "repo": d.repo.name}
+        sq.tried.append(call_signature(call))
         _emit({"type": "tool", "sub_question": sq.id, "tool": call["tool"], "args": call["args"]})
         try:
             payload = await d.toolbox.call(call["tool"], args)
@@ -181,6 +190,8 @@ async def retrieve(state: AgentState, config) -> dict:
         if sq.status == "pending":
             sq.attempts += 1
             sq.calls = []
+            if sq.query not in sq.queries:
+                sq.queries.append(sq.query)
     n_new = len(evidence) - len(state.get("evidence", {}))
     return {
         "sub_questions": [sq.model_dump() for sq in subs],
@@ -204,8 +215,12 @@ def select_evidence(state: AgentState, limit: int, threshold: float | None) -> l
     for sq in state.get("sub_questions", []):
         keys = [k for k in sq["evidence_keys"] if k in evidence]
         if threshold is not None:
-            keys = [k for k in keys if (evidence[k].get("relevance") or 0) >= threshold]
-            keys.sort(key=lambda k: evidence[k].get("relevance") or 0, reverse=True)
+
+            def rel(k: str, sq_id: str = sq["id"]) -> float:
+                return float(evidence[k].get("relevance_by_sq", {}).get(sq_id, 0.0))
+
+            keys = [k for k in keys if rel(k) >= threshold]
+            keys.sort(key=rel, reverse=True)
         per_sq.append(keys)
     chosen: list[str] = []
     while len(chosen) < limit and any(per_sq):
@@ -223,6 +238,15 @@ async def synthesize(state: AgentState, config) -> dict:
     s = d.settings
     graded = any(e.get("relevance") is not None for e in state.get("evidence", {}).values())
     items = select_evidence(state, s.max_evidence_for_synthesis, s.grade_threshold if graded else None)
+    if graded and not items:
+        # Nothing survived grading: answer deterministically instead of letting the model guess.
+        answer = insufficient_answer(state)
+        _emit({"type": "token", "text": answer})
+        return {
+            "answer_raw": answer,
+            "synth_keys": [],
+            "trace": _step(state, "synthesize", "no evidence passed grading: insufficient evidence", t0),
+        }
     tag = new_tag()
     prompt = load_prompt("synthesize")
     system = prompt.render(repo=d.repo.name, tag=tag, today=_today())
@@ -289,15 +313,284 @@ async def verify_citations(state: AgentState, config) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- finalize
-async def finalize(state: AgentState, config) -> dict:
-    """Append this turn to the thread's short-term history."""
+def insufficient_answer(state: AgentState) -> str:
+    lines = ["Insufficient evidence: I could not find support in the repository for this question."]
+    for sq in state.get("sub_questions", []):
+        tried = ", ".join(f"`{q}`" for q in (sq.get("queries") or [sq["query"]])[:3])
+        lines.append(f"- {sq['text']} (searched: {tried})")
+    lines.append("Try naming a file, function, or time range, or check that the right repository is indexed.")
+    return "\n".join(lines)
+
+
+def call_signature(call: dict) -> str:
+    return call["tool"] + json.dumps(call["args"], sort_keys=True, default=str)
+
+
+# --------------------------------------------------------------------------- memory: load
+async def load_memory(state: AgentState, config) -> dict:
+    """Fetch this user's relevant long-term memories for the repo (thread history comes from the checkpointer)."""
     t0 = time.perf_counter()
+    d = deps_from(config)
+    memories: list[dict] = []
+    if d.memory_store is not None:
+        found = await asyncio.to_thread(
+            d.memory_store.search, state["user_id"], d.repo.name, state["question"], d.settings.memory_top_k
+        )
+        await asyncio.to_thread(d.memory_store.touch, [m.id for m in found])
+        memories = [
+            {
+                "id": m.id,
+                "text": m.text,
+                "category": m.category,
+                "importance": m.importance,
+                "weight": m.weight,
+            }
+            for m in found
+        ]
+    n_hist = len(state.get("history") or [])
+    return {
+        "memories": memories,
+        "trace": _step(
+            state,
+            "load_memory",
+            f"{len(memories)} long-term memorie(s), {n_hist} earlier turn(s) in this thread",
+            t0,
+            memories=memories,
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- grade
+async def grade_evidence(state: AgentState, config) -> dict:
+    """LLM grader: per-item relevance and a sufficiency verdict for each sub-question just retrieved."""
+    t0 = time.perf_counter()
+    d = deps_from(config)
+    s = d.settings
+    subs = [SubQuestion(**x) for x in state["sub_questions"]]
+    evidence: dict[str, dict] = {k: dict(v) for k, v in state.get("evidence", {}).items()}
+    to_grade = [sq for sq in subs if sq.status == "pending"]
+
+    tag = new_tag()
+    numbering: dict[int, tuple[str, str]] = {}  # item id -> (sub-question id, evidence key)
+    blocks = []
+    n = 0
+    for sq in to_grade:
+        items = []
+        for key in sq.evidence_keys:
+            if key not in evidence or sq.id in evidence[key].get("relevance_by_sq", {}):
+                continue  # already graded for this sub-question in an earlier round
+            n += 1
+            numbering[n] = (sq.id, key)
+            items.append(render_evidence(n, Evidence(**evidence[key]), tag, max_chars=900))
+        graded_before = [
+            f"{evidence[k]['title']} (relevance {evidence[k]['relevance_by_sq'][sq.id]:.1f})"
+            for k in sq.evidence_keys
+            if k in evidence and sq.id in evidence[k].get("relevance_by_sq", {})
+        ]
+        prior = (
+            ("\nAlready graded for this sub-question:\n- " + "\n- ".join(graded_before))
+            if graded_before
+            else ""
+        )
+        blocks.append(
+            f"## Sub-question {sq.id}: {sq.text}{prior}\nNew items:\n"
+            + ("\n\n".join(items) if items else "(none)")
+        )
+
+    verdicts: dict[str, tuple[bool, str]] = {}
+    if to_grade:
+        prompt = load_prompt("grade")
+        try:
+            out = await d.llm.complete_json(
+                purpose="grade",
+                system=prompt.render(repo=d.repo.name, tag=tag),
+                messages=[{"role": "user", "content": "\n\n".join(blocks)}],
+                schema=GradeOutput,
+                fast=True,
+            )
+            for g in out.grades:
+                if g.id in numbering:
+                    sq_id, key = numbering[g.id]
+                    score = max(0.0, min(1.0, float(g.relevance)))
+                    evidence[key].setdefault("relevance_by_sq", {})[sq_id] = round(score, 2)
+            verdicts = {v.sub_question_id: (v.sufficient, v.missing) for v in out.verdicts}
+        except LLMUnavailable:
+            raise
+        except LLMError as e:
+            log.warning("grader failed; treating retrieval scores as neutral", extra={"error": str(e)})
+            for sq_id, key in numbering.values():
+                evidence[key].setdefault("relevance_by_sq", {})[sq_id] = s.grade_threshold
+
+    for ev in evidence.values():
+        if ev.get("relevance_by_sq"):
+            ev["relevance"] = max(ev["relevance_by_sq"].values())
+
+    budget_left = d.toolbox.remaining > 0
+    detail = []
+    for sq in to_grade:
+        strong = [
+            k
+            for k in sq.evidence_keys
+            if evidence.get(k, {}).get("relevance_by_sq", {}).get(sq.id, 0) >= s.grade_threshold
+        ]
+        sufficient, missing = verdicts.get(sq.id, (bool(strong), ""))
+        if sufficient and strong:
+            sq.status, sq.note = "sufficient", None
+        elif sq.attempts <= s.max_retries and budget_left:
+            sq.status, sq.note = "weak", missing or "evidence too weak"
+        else:
+            sq.status = "insufficient"
+            sq.note = (missing or "no relevant evidence found") + (
+                "" if budget_left else " (tool budget exhausted)"
+            )
+        detail.append(
+            {
+                "id": sq.id,
+                "status": sq.status,
+                "attempt": sq.attempts,
+                "strong_items": len(strong),
+                "missing": missing,
+            }
+        )
+    summary = ", ".join(f"{x['id']}={x['status']}" for x in detail) or "nothing to grade"
+    return {
+        "sub_questions": [sq.model_dump() for sq in subs],
+        "evidence": evidence,
+        "round": state.get("round", 0) + 1,
+        "trace": _step(state, "grade_evidence", summary, t0, verdicts=detail, graded_items=len(numbering)),
+    }
+
+
+def route_after_grade(state: AgentState) -> str:
+    return "rewrite_queries" if any(sq["status"] == "weak" for sq in state["sub_questions"]) else "synthesize"
+
+
+# --------------------------------------------------------------------------- rewrite
+async def rewrite_queries(state: AgentState, config) -> dict:
+    """Re-plan weak sub-questions: new queries and follow-up tool calls, never repeating a tried call."""
+    t0 = time.perf_counter()
+    d = deps_from(config)
+    s = d.settings
+    tools = await d.toolbox.tools()
+    subs = [SubQuestion(**x) for x in state["sub_questions"]]
+    evidence = state.get("evidence", {})
+    weak = [sq for sq in subs if sq.status == "weak"]
+
+    blocks = []
+    for sq in weak:
+        leads = sorted(
+            (evidence[k] for k in sq.evidence_keys if k in evidence),
+            key=lambda e: e.get("relevance_by_sq", {}).get(sq.id, 0),
+            reverse=True,
+        )[:6]
+        lead_lines = "\n".join(
+            f"  - {Evidence(**e).label} | {e['title'][:120]} | relevance {e.get('relevance_by_sq', {}).get(sq.id, 0):.1f}"
+            for e in leads
+        )
+        tried = "\n".join(f"  - {t}" for t in sq.tried) or "  - (none)"
+        blocks.append(
+            f"## {sq.id}: {sq.text}\nMissing: {sq.note}\nQueries used: {sq.queries}\n"
+            f"Calls already tried:\n{tried}\nEvidence found so far (leads):\n{lead_lines or '  - (none)'}"
+        )
+    replans: dict[str, Any] = {}
+    prompt = load_prompt("rewrite")
+    try:
+        out = await d.llm.complete_json(
+            purpose="rewrite",
+            system=prompt.render(repo=d.repo.name, today=_today(), catalog=await d.toolbox.catalog_text()),
+            messages=[{"role": "user", "content": "\n\n".join(blocks)}],
+            schema=RewriteOutput,
+            fast=True,
+        )
+        replans = {r.sub_question_id: r for r in out.replans}
+    except LLMUnavailable:
+        raise
+    except LLMError as e:
+        log.warning("rewrite failed; using fallback queries", extra={"error": str(e)})
+
+    detail = []
+    for sq in weak:
+        r = replans.get(sq.id)
+        new_query = (r.query if r and r.query.strip() else f"{sq.text}").strip()
+        calls = validate_calls(r.calls, tools, s.max_calls_per_subquestion) if r else []
+        calls = [c for c in calls if call_signature(c) not in sq.tried]
+        if not calls:
+            calls = [
+                c for c in default_calls(sq.sources, new_query, tools) if call_signature(c) not in sq.tried
+            ]
+        if not calls:
+            sq.status, sq.note = "insufficient", (sq.note or "") + " (no new searches left to try)"
+        else:
+            sq.status, sq.query, sq.calls = "pending", new_query, calls
+        detail.append({"id": sq.id, "query": new_query, "calls": calls, "status": sq.status})
+    return {
+        "sub_questions": [sq.model_dump() for sq in subs],
+        "trace": _step(
+            state, "rewrite_queries", f"re-planned {len(weak)} weak sub-question(s)", t0, replans=detail
+        ),
+    }
+
+
+def route_after_rewrite(state: AgentState) -> str:
+    return "retrieve" if any(sq["status"] == "pending" for sq in state["sub_questions"]) else "synthesize"
+
+
+# --------------------------------------------------------------------------- memory: write
+async def write_memory(state: AgentState, config) -> dict:
+    """Propose memories from the user's own messages and apply the write policy; update thread history."""
+    t0 = time.perf_counter()
+    d = deps_from(config)
     history = [
         *(state.get("history") or []),
         {"question": state["question"], "answer": state.get("answer", "")},
-    ]
+    ][-HISTORY_TURNS:]
+    decisions: list[dict] = []
+    summary = "no memory store"
+    if d.memory_store is not None:
+        user_msgs = [h["question"] for h in history[-3:]]
+        if not worth_extracting([state["question"]]):
+            summary = "skipped: no statements about the user"
+        else:
+            existing = await asyncio.to_thread(
+                d.memory_store.search, state["user_id"], d.repo.name, state["question"], 8
+            )
+            known = "\n".join(f"- #{m.id} [{m.category}] {m.text}" for m in existing) or "(none)"
+            prompt = load_prompt("memory_extract")
+            try:
+                out = await d.llm.complete_json(
+                    purpose="memory",
+                    system=prompt.render(repo=d.repo.name),
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": f"Existing memories:\n{known}\n\nUser messages (latest last):\n"
+                            + "\n".join(f"- {m}" for m in user_msgs),
+                        }
+                    ],
+                    schema=ExtractionOutput,
+                    fast=True,
+                )
+                applied = await asyncio.to_thread(
+                    apply_candidates,
+                    d.memory_store,
+                    state["user_id"],
+                    d.repo.name,
+                    out.candidates,
+                    d.settings,
+                    state.get("thread_id"),
+                )
+                decisions = [x.to_dict() for x in applied]
+                summary = (
+                    ", ".join(f"{x['verdict']}: {x['text'][:60]}" for x in decisions)
+                    or "nothing worth remembering"
+                )
+            except LLMUnavailable:
+                raise
+            except LLMError as e:
+                log.warning("memory extraction failed", extra={"error": str(e)})
+                summary = "memory extraction failed"
     return {
-        "history": history[-HISTORY_TURNS:],
-        "trace": _step(state, "finalize", f"thread history: {len(history[-HISTORY_TURNS:])} turn(s)", t0),
+        "history": history,
+        "memories_written": decisions,
+        "trace": _step(state, "write_memory", summary, t0, decisions=decisions),
     }

@@ -81,3 +81,36 @@ def plan(*subs: tuple[str, list[str], str, list[tuple[str, dict]]]) -> dict:
             for text, sources, query, calls in subs
         ]
     }
+
+
+def grade_all(score: float = 0.9, sufficient: bool = True):
+    """Scripted grader: same relevance for every item, same verdict for every sub-question."""
+
+    def handler(system, messages, schema):
+        user = messages[-1]["content"]
+        item_ids = [int(x) for x in re.findall(r'<ev-[0-9a-f]{8} id="(\d+)"', user)]
+        sq_ids = re.findall(r"## Sub-question (q\d+):", user)
+        return {
+            "grades": [{"id": i, "relevance": score} for i in item_ids],
+            "verdicts": [
+                {
+                    "sub_question_id": q,
+                    "sufficient": sufficient,
+                    "missing": "" if sufficient else "nothing relevant",
+                }
+                for q in sq_ids
+            ],
+        }
+
+    return handler
+
+
+STAGE3_NODES = [
+    "load_memory",
+    "decompose",
+    "retrieve",
+    "grade_evidence",
+    "synthesize",
+    "verify_citations",
+    "write_memory",
+]

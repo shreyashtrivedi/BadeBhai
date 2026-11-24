@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from repomind.app.agent.checkpoint import postgres_checkpointer
 from repomind.app.agent.runner import AgentRunner
 from repomind.app.naive import answer_naive
 from repomind.app.schemas import AskRequest, AskResponse
@@ -36,8 +37,11 @@ async def ask_once(
         if mode == "naive":
             resp = await answer_naive(question, repo, llm=llm, pool=pool, embedder=embedder, settings=s)
         else:
-            runner = runner or AgentRunner(s, llm, pool, embedder)
             req = AskRequest(question=question, repo=repo_name, user_id=user_id, thread_id=thread_id)
-            resp = await runner.ask(req, repo)
+            if runner is not None:
+                resp = await runner.ask(req, repo)
+            else:  # persistent threads across CLI invocations
+                async with postgres_checkpointer(s.database_url) as saver:
+                    resp = await AgentRunner(s, llm, pool, embedder, checkpointer=saver).ask(req, repo)
     resp.usage = usage.summary()
     return resp

@@ -11,7 +11,7 @@ from repomind.db.pool import get_pool
 from repomind.ingestion.indexer import Indexer
 from repomind.ingestion.webhook import sign
 from repomind.llm.fake import FakeLLM
-from tests.integration.helpers import evidence_ids, plan, toolbox_factory
+from tests.integration.helpers import STAGE3_NODES, evidence_ids, grade_all, plan, toolbox_factory
 
 pytestmark = pytest.mark.db
 
@@ -58,7 +58,7 @@ def indexed(db_settings, tiny_repo, git):
 
 
 def test_agent_answers_from_code_commits_and_issues(indexed):
-    llm = FakeLLM({"decompose": MIXED_PLAN, "synthesize": cite_one_of_each})
+    llm = FakeLLM({"decompose": MIXED_PLAN, "grade": grade_all(), "synthesize": cite_one_of_each})
     app = create_app(indexed, llm=llm, toolbox_factory=toolbox_factory(indexed))
     q = "Where is auth handled, why was token rotation added, and are there open issues about it?"
     with TestClient(app) as client:
@@ -69,13 +69,7 @@ def test_agent_answers_from_code_commits_and_issues(indexed):
     assert types == {"code", "commit", "issue"}  # >= 2 sources, as required
     v = body["verification"]
     assert v["total_citations"] == 3 and v["valid_citations"] == 3
-    assert [s["node"] for s in body["trace"]] == [
-        "decompose",
-        "retrieve",
-        "synthesize",
-        "verify_citations",
-        "finalize",
-    ]
+    assert [s["node"] for s in body["trace"]] == STAGE3_NODES
     servers = {c["server"] for c in body["tool_calls"]}
     assert servers == {"code_search", "git_history"}
     assert all(c["ok"] for c in body["tool_calls"])
@@ -87,7 +81,7 @@ def test_agent_answers_from_code_commits_and_issues(indexed):
 
 
 def test_streaming_emits_steps_tools_tokens_and_final(indexed):
-    llm = FakeLLM({"decompose": MIXED_PLAN, "synthesize": cite_one_of_each})
+    llm = FakeLLM({"decompose": MIXED_PLAN, "grade": grade_all(), "synthesize": cite_one_of_each})
     from repomind.app.agent.runner import AgentRunner
     from repomind.app.schemas import AskRequest
     from repomind.db import repos as repo_db
@@ -118,7 +112,7 @@ def test_thread_history_carries_into_follow_up(indexed):
         seen.append(messages[-1]["content"])
         return MIXED_PLAN
 
-    llm = FakeLLM({"decompose": decompose, "synthesize": cite_one_of_each})
+    llm = FakeLLM({"decompose": decompose, "grade": grade_all(), "synthesize": cite_one_of_each})
     app = create_app(indexed, llm=llm, toolbox_factory=toolbox_factory(indexed))
     with TestClient(app) as client:
         first = client.post(
@@ -144,6 +138,7 @@ def test_rate_limited_github_degrades_gracefully(indexed):
     llm = FakeLLM(
         {
             "decompose": MIXED_PLAN,
+            "grade": grade_all(),
             "synthesize": lambda s, m, sc: (
                 f"Auth lives in app/auth.py [{evidence_ids(m[-1]['content'])['code'][0]}]."
             ),

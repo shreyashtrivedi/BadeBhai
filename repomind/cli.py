@@ -7,7 +7,7 @@ import sys
 
 import typer
 
-from repomind.config import get_settings
+from repomind.config import configure_tracing, get_settings
 from repomind.log import setup_logging
 
 app = typer.Typer(
@@ -21,6 +21,7 @@ def _init() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
     s = get_settings()
     setup_logging(s.log_level, json_lines=False)
+    configure_tracing(s)
 
 
 def _print(obj) -> None:
@@ -226,6 +227,43 @@ def serve(
     finally:
         for p in procs:
             p.terminate()
+
+
+memories_app = typer.Typer(help="Inspect and delete long-term memories.", no_args_is_help=True)
+app.add_typer(memories_app, name="memories")
+
+
+def _memory_store():
+    from repomind.app.memory.store import MemoryStore
+    from repomind.db.pool import get_pool
+    from repomind.embeddings import get_embedder
+
+    s = get_settings()
+    return MemoryStore(get_pool(s), get_embedder(s), s)
+
+
+@memories_app.command("list")
+def memories_list(user: str = typer.Option(..., help="user id"), repo: str = typer.Option(None)) -> None:
+    """List a user's active memories."""
+    _init()
+    for m in _memory_store().list(user, repo):
+        typer.echo(
+            f"#{m.id:<5} {m.repo:24s} [{m.category}] imp={m.importance:.2f} used={m.use_count}  {m.text}"
+        )
+
+
+@memories_app.command("delete")
+def memories_delete(memory_id: int, user: str = typer.Option(..., help="user id")) -> None:
+    """Delete one memory."""
+    _init()
+    typer.echo("deleted" if _memory_store().delete(user, memory_id) else "not found")
+
+
+@memories_app.command("clear")
+def memories_clear(user: str = typer.Option(..., help="user id"), repo: str = typer.Option(None)) -> None:
+    """Delete all of a user's memories (optionally for one repo)."""
+    _init()
+    typer.echo(f"deleted {_memory_store().delete_all(user, repo)}")
 
 
 @app.command("reset-db")

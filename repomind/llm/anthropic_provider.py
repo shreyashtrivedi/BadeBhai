@@ -60,8 +60,10 @@ class AnthropicProvider(LLMProvider):
     def client(self) -> anthropic.AsyncAnthropic:
         if self._client is None:
             try:
+                key = self.s.anthropic_api_key.get_secret_value() if self.s.anthropic_api_key else None
+                kwargs = {"api_key": key} if key else {}  # else: env var / `ant auth login` profile
                 self._client = anthropic.AsyncAnthropic(
-                    timeout=self.s.llm_timeout_s, max_retries=self.s.llm_max_retries
+                    timeout=self.s.llm_timeout_s, max_retries=self.s.llm_max_retries, **kwargs
                 )
             except Exception as e:  # missing credentials raise at construction time
                 raise LLMUnavailable(

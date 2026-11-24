@@ -3,7 +3,7 @@
 An agentic RAG assistant that answers questions about a GitHub repository by combining code,
 commit history, issues/PRs and docs, with verified citations and per-user memory.
 
-> Work in progress (Stage 2 of 5). See [docs/PLAN.md](docs/PLAN.md) for the build plan.
+> Work in progress (Stage 3 of 5). See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## One-command start (Docker)
 
@@ -47,10 +47,29 @@ Run them alone with `uv run repomind mcp up` (Streamable HTTP) or
 - **API polling:** `SYNC_POLL_INTERVAL_S=60`.
 - Issues, PRs and commits are never bulk-indexed: they are read live through the `git_history` server.
 
+## Agent and memory
+
+`POST /ask` (JSON) or `POST /ask/stream` (server-sent events: `start`, `step`, `tool`, `token`, `final`).
+The graph: `load_memory -> decompose -> retrieve (parallel MCP calls) -> grade_evidence
+-> [rewrite_queries -> retrieve]x<=2 -> synthesize -> verify_citations -> write_memory`.
+
+- Sub-questions with weak evidence are re-planned (new queries, follow-up calls such as blame on a
+  found range), at most `MAX_RETRIES=2` times; then they are reported as **insufficient evidence**.
+- Every `[n]` citation is checked against the index and the working copy; invalid ones are stripped
+  and the claim is flagged.
+- Long-term memory is per user and repo. Only durable facts (role, focus area, preferences,
+  corrections, project context) above `MEMORY_IMPORTANCE_THRESHOLD` are kept; contradictions
+  supersede, duplicates refresh, secrets and code are never stored, weight decays when unused.
+  `GET /memories?user_id=`, `DELETE /memories/{id}?user_id=`, `DELETE /memories?user_id=`
+  (CLI: `repomind memories list|delete|clear`).
+- Thread state (short-term memory) lives in the LangGraph Postgres checkpointer.
+- Tracing: set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`; otherwise structured JSON logs.
+
 ## Tests
 
 ```bash
 docker compose up -d db
 uv run pytest           # DB tests use a separate `repomind_test` database
 uv run ruff check .
+RUN_LIVE=1 uv run pytest -m live   # real Claude API (needs ANTHROPIC_API_KEY)
 ```

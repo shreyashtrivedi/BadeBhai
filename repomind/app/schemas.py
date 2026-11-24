@@ -26,7 +26,8 @@ class Evidence(BaseModel):
     url: str | None = None
     date: str | None = None
     score: float | None = None  # retrieval score
-    relevance: float | None = None  # grader score 0-1
+    relevance: float | None = None  # grader score 0-1 (max over sub-questions)
+    relevance_by_sq: dict[str, float] = Field(default_factory=dict)
     sub_question_ids: list[str] = Field(default_factory=list)
     suspicious: bool = False  # contains instruction-like text (prompt-injection heuristic)
 
@@ -82,6 +83,8 @@ class SubQuestion(BaseModel):
     attempts: int = 0
     evidence_keys: list[str] = Field(default_factory=list)
     calls: list[dict[str, Any]] = Field(default_factory=list)  # planned tool calls not yet executed
+    tried: list[str] = Field(default_factory=list)  # signatures of tool calls already executed
+    queries: list[str] = Field(default_factory=list)  # every query used so far (original + rewrites)
     note: str | None = None
 
 

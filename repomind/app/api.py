@@ -12,13 +12,16 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from repomind import __version__
+from repomind.app.agent.checkpoint import postgres_checkpointer
 from repomind.app.agent.runner import AgentRunner
 from repomind.app.mcp_client import McpToolbox
+from repomind.app.memory.store import MemoryStore
 from repomind.app.naive import answer_naive
 from repomind.app.schemas import AskRequest, AskResponse
-from repomind.config import Settings, get_settings
+from repomind.config import Settings, configure_tracing, get_settings
 from repomind.db import repos as repo_db
 from repomind.db.pool import get_pool
 from repomind.embeddings import get_embedder
@@ -49,6 +52,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(s.log_level, s.log_json)
+        tracing = configure_tracing(s)
         st = app.state
         st.settings = s
         st.pool = await asyncio.to_thread(get_pool, s)
@@ -56,8 +60,20 @@ def create_app(
         st.llm = llm or get_llm(s)
         st.jobs = {}
         st.indexer = Indexer(s, st.pool, st.embedder)
+        st.memory = MemoryStore(st.pool, st.embedder, s)
+        saver_cm = None
+        saver = checkpointer
+        if saver is None:  # short-term memory survives restarts: Postgres checkpointer
+            saver_cm = postgres_checkpointer(s.database_url)
+            saver = await saver_cm.__aenter__()
         st.runner = AgentRunner(
-            s, st.llm, st.pool, st.embedder, checkpointer=checkpointer, toolbox_factory=toolbox_factory
+            s,
+            st.llm,
+            st.pool,
+            st.embedder,
+            checkpointer=saver,
+            toolbox_factory=toolbox_factory,
+            memory_store=st.memory,
         )
         stop = asyncio.Event()
         background: list[asyncio.Task] = []
@@ -66,12 +82,20 @@ def create_app(
         if s.auto_ingest_repo:
             background.append(asyncio.create_task(_auto_ingest(app, s.auto_ingest_repo)))
         log.info(
-            "api ready", extra={"llm": st.llm.name, "embedder": st.embedder.name, "mcp": s.mcp_transport}
+            "api ready",
+            extra={
+                "llm": st.llm.name,
+                "embedder": st.embedder.name,
+                "mcp": s.mcp_transport,
+                "langsmith": tracing,
+            },
         )
         yield
         stop.set()
         for task in background:
             task.cancel()
+        if saver_cm is not None:
+            await saver_cm.__aexit__(None, None, None)
 
     app = FastAPI(title="RepoMind", version=__version__, lifespan=lifespan)
 
@@ -192,6 +216,60 @@ def create_app(
                 resp = await st.runner.ask(body, repo)
         resp.usage = usage.summary()
         return resp
+
+    @app.post("/ask/stream")
+    async def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
+        """Server-sent events: start, step, tool, token ... then final (or error)."""
+        repo = _repo(request, body.repo)
+        st = request.app.state
+
+        async def events():
+            with track_usage() as usage:
+                try:
+                    if body.mode == "naive":
+                        resp = await answer_naive(
+                            body.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
+                        )
+                        resp.usage = usage.summary()
+                        yield {
+                            "event": "final",
+                            "data": json.dumps({"type": "final", "response": resp.model_dump()}),
+                        }
+                        return
+                    async for ev in st.runner.stream(body, repo):
+                        if ev["type"] == "final":
+                            ev["response"]["usage"] = usage.summary()
+                        yield {"event": ev["type"], "data": json.dumps(ev, default=str)}
+                except LLMUnavailable as e:
+                    yield {"event": "error", "data": json.dumps({"error": str(e), "status": 503})}
+                except LLMError as e:
+                    yield {"event": "error", "data": json.dumps({"error": str(e), "status": 502})}
+                except TimeoutError:
+                    yield {"event": "error", "data": json.dumps({"error": "timed out", "status": 504})}
+                except Exception:
+                    log.exception("stream failed")
+                    yield {"event": "error", "data": json.dumps({"error": "internal error", "status": 500})}
+
+        return EventSourceResponse(events())
+
+    # ------------------------------------------------------------------ memories (user control)
+    @app.get("/memories")
+    async def list_memories(
+        request: Request, user_id: str, repo: str | None = None, include_inactive: bool = False
+    ) -> list[dict]:
+        mems = await asyncio.to_thread(request.app.state.memory.list, user_id, repo, include_inactive)
+        return [m.to_public() for m in mems]
+
+    @app.delete("/memories/{memory_id}")
+    async def delete_memory(request: Request, memory_id: int, user_id: str) -> dict:
+        if not await asyncio.to_thread(request.app.state.memory.delete, user_id, memory_id):
+            raise HTTPException(404, "memory not found for this user")
+        return {"deleted": memory_id}
+
+    @app.delete("/memories")
+    async def delete_all_memories(request: Request, user_id: str, repo: str | None = None) -> dict:
+        n = await asyncio.to_thread(request.app.state.memory.delete_all, user_id, repo)
+        return {"deleted": n}
 
     @app.post("/webhooks/github", status_code=202)
     async def github_webhook(request: Request) -> dict:

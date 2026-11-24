@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from repomind.app.agent.graph import build_graph
 from repomind.app.agent.state import RunDeps, fresh_turn
 from repomind.app.mcp_client import McpToolbox
+from repomind.app.memory.store import MemoryStore
 from repomind.app.schemas import AskRequest, AskResponse, Citation, Evidence, SubQuestion, TraceStep
 from repomind.config import Settings
 from repomind.db.repos import RepoRecord
@@ -35,7 +36,9 @@ class AgentRunner:
         self.llm = llm
         self.pool = pool
         self.embedder = embedder
-        self.memory_store = memory_store
+        self.memory_store = (
+            memory_store if memory_store is not None else MemoryStore(pool, embedder, settings)
+        )
         self.toolbox_factory = toolbox_factory or (lambda: McpToolbox.from_settings(settings))
         self.graph = build_graph().compile(checkpointer=checkpointer or InMemorySaver())
 
@@ -58,6 +61,10 @@ class AgentRunner:
         config = {
             "configurable": {"thread_id": self.thread_key(req, thread_id), "deps": deps},
             "recursion_limit": 60,
+            # Picked up by LangSmith when LANGSMITH_TRACING=true (LangGraph traces every node).
+            "run_name": "repomind.ask",
+            "tags": ["repomind", "agent"],
+            "metadata": {"user_id": req.user_id, "repo": repo.name, "thread_id": thread_id},
         }
         return thread_id, fresh_turn(req.question, repo.name, req.user_id, thread_id), config
 

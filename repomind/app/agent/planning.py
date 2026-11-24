@@ -74,3 +74,31 @@ def default_calls(sources: list[str], query: str, tools: dict[str, ToolSpec]) ->
         if tool in tools:
             calls.append({"tool": tool, "args": {"query": query}})
     return calls
+
+
+class ItemGrade(BaseModel):
+    id: int = Field(description="Evidence item id")
+    relevance: float = Field(description="0.0-1.0 relevance to the item's sub-question")
+
+
+class SubQuestionVerdict(BaseModel):
+    sub_question_id: str
+    sufficient: bool = Field(
+        description="Do the items scoring >= 0.5 answer the sub-question with confidence?"
+    )
+    missing: str = Field(description="What is missing if not sufficient, else empty")
+
+
+class GradeOutput(BaseModel):
+    grades: list[ItemGrade]
+    verdicts: list[SubQuestionVerdict]
+
+
+class Replan(BaseModel):
+    sub_question_id: str
+    query: str = Field(description="Rewritten search query")
+    calls: list[PlannedCall] = Field(description="1-3 new tool calls, none already tried")
+
+
+class RewriteOutput(BaseModel):
+    replans: list[Replan]
