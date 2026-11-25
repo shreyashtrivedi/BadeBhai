@@ -84,6 +84,25 @@ def repos() -> None:
 
 
 @app.command()
+def remove(
+    name: str = typer.Argument(..., help="repo name as shown by `badebhai repos`"),
+    keep_memories: bool = typer.Option(False, help="keep what users told BadeBhai about this repo"),
+    yes: bool = typer.Option(False, "--yes", help="skip confirmation"),
+) -> None:
+    """Remove a repository: its index and downloaded copy (a local folder you indexed is never touched)."""
+    _init()
+    if not yes and not typer.confirm(f"Remove {name} from BadeBhai?"):
+        raise typer.Abort()
+    from badebhai.ingestion.indexer import Indexer
+
+    try:
+        _print(Indexer().remove(name, delete_memories=not keep_memories))
+    except KeyError as e:
+        typer.echo(str(e).strip("'\""), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
 def search(
     repo: str,
     query: str,
@@ -177,17 +196,20 @@ def _spawn_mcp_servers(host: str = "127.0.0.1"):
 
 @mcp_app.command("serve")
 def mcp_serve(
-    server: str = typer.Argument(..., help="code_search | git_history | docs"),
+    server: str = typer.Argument(..., help="code_search | git_history | docs | assistant"),
     transport: str = typer.Option("streamable-http", help="streamable-http | stdio"),
     host: str = "127.0.0.1",
-    port: int = typer.Option(None, help="defaults: code_search 8101, git_history 8102, docs 8103"),
+    port: int = typer.Option(
+        None, help="defaults: code_search 8101, git_history 8102, docs 8103, assistant 8104"
+    ),
 ) -> None:
-    """Run one MCP server in the foreground."""
+    """Run one MCP server in the foreground (`assistant` lets editors ask BadeBhai; see docs/editors.md)."""
     import runpy
 
-    if server not in MCP_SERVERS:
+    servers = {**MCP_SERVERS, "assistant": ("badebhai.mcp_servers.assistant", 8104)}
+    if server not in servers:
         raise typer.BadParameter(f"unknown server {server!r}")
-    module, default_port = MCP_SERVERS[server]
+    module, default_port = servers[server]
     sys.argv = [module, "--transport", transport, "--host", host, "--port", str(port or default_port)]
     runpy.run_module(module, run_name="__main__")
 
@@ -264,6 +286,55 @@ def memories_clear(user: str = typer.Option(..., help="user id"), repo: str = ty
     """Delete all of a user's memories (optionally for one repo)."""
     _init()
     typer.echo(f"deleted {_memory_store().delete_all(user, repo)}")
+
+
+feedback_app = typer.Typer(help="Thumbs up/down left on answers in the web UI.", no_args_is_help=True)
+app.add_typer(feedback_app, name="feedback")
+
+
+@feedback_app.command("list")
+def feedback_list(
+    repo: str = typer.Option(None),
+    down: bool = typer.Option(False, "--down", help="only thumbs-down"),
+    limit: int = 50,
+) -> None:
+    """Show recent feedback."""
+    _init()
+    from badebhai.db import feedback as feedback_db
+    from badebhai.db.pool import get_pool
+
+    pool = get_pool()
+    totals = feedback_db.summary(pool, repo)
+    typer.echo(f"👍 {totals['up']}   👎 {totals['down']}")
+    for r in feedback_db.list_feedback(pool, repo, -1 if down else None, limit):
+        thumb = "👍" if r["rating"] > 0 else "👎"
+        note = f"  ({r['comment']})" if r["comment"] else ""
+        typer.echo(f"#{r['id']:<5} {thumb} {r['repo']:24s} {r['question'][:90]}{note}")
+
+
+@feedback_app.command("export")
+def feedback_export(
+    repo: str = typer.Option(None),
+    out: str = typer.Option("-", help="YAML file to write ('-' = stdout)"),
+) -> None:
+    """Export thumbs-down questions as golden-set stubs (fill in expectations, then add to the eval)."""
+    _init()
+    import yaml
+
+    from badebhai.db import feedback as feedback_db
+    from badebhai.db.pool import get_pool
+
+    rows = feedback_db.list_feedback(get_pool(), repo, -1, 500)
+    text = yaml.safe_dump(
+        {"questions": feedback_db.to_golden_candidates(rows)}, sort_keys=False, allow_unicode=True, width=110
+    )
+    if out == "-":
+        typer.echo(text)
+    else:
+        from pathlib import Path
+
+        Path(out).write_text(text, encoding="utf-8")
+        typer.echo(f"wrote {len(rows)} question stub(s) to {out}")
 
 
 @app.command("eval")

@@ -142,3 +142,17 @@ def file_line_count(pool: ConnectionPool, repo_id: int, path: str) -> int | None
 def delete_repo(pool: ConnectionPool, name: str) -> bool:
     with pool.connection() as conn:
         return conn.execute("DELETE FROM repos WHERE name = %s", (name,)).rowcount > 0
+
+
+def remove_repo(
+    pool: ConnectionPool, repo_id: int, name: str, delete_memories: bool = True
+) -> dict[str, int]:
+    """Remove a repo's index (files and chunks cascade) and, by default, what users told BadeBhai about it."""
+    with pool.connection() as conn:
+        files = conn.execute("SELECT count(*) FROM files WHERE repo_id = %s", (repo_id,)).fetchone()[0]
+        mems = 0
+        if delete_memories:
+            mems = conn.execute("DELETE FROM memories WHERE repo = %s", (name,)).rowcount
+        conn.execute("DELETE FROM chunks WHERE repo_id = %s", (repo_id,))
+        conn.execute("DELETE FROM repos WHERE id = %s", (repo_id,))
+    return {"files": int(files), "memories": int(mems)}

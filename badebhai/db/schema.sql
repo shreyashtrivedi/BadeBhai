@@ -74,3 +74,21 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE INDEX IF NOT EXISTS memories_scope_idx ON memories (user_id, repo) WHERE active;
+
+-- 👍/👎 on answers. Thumbs-down rows become candidate eval questions (`badebhai feedback export`).
+CREATE TABLE IF NOT EXISTS feedback (
+    id          BIGSERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    user_id     TEXT NOT NULL,
+    repo        TEXT NOT NULL,
+    commit      TEXT,
+    mode        TEXT,
+    thread_id   TEXT,
+    question    TEXT NOT NULL,
+    answer      TEXT NOT NULL,
+    rating      SMALLINT NOT NULL CHECK (rating IN (-1, 1)),
+    comment     TEXT,
+    citations   JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS feedback_repo_idx ON feedback (repo, rating, created_at DESC);

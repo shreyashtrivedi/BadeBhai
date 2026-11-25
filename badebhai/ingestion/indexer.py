@@ -10,6 +10,10 @@ Incremental rules:
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import stat
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -44,6 +48,23 @@ Progress = Callable[[str, int, int], None]  # (stage, done, total): "downloading
 
 def _no_progress(stage: str, done: int, total: int) -> None:
     pass
+
+
+def _delete_managed_dir(path: Path, repos_dir: Path) -> bool:
+    """rmtree, but only strictly inside DATA_DIR/repos (git marks object files read-only on Windows)."""
+    path, root = path.resolve(), repos_dir.resolve()
+    if path == root or root not in path.parents or not path.exists():
+        return False
+
+    def _force(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_force)
+    else:  # pragma: no cover
+        shutil.rmtree(path, onerror=_force)
+    return True
 
 
 _LOCK_BASE = 910_000
@@ -145,6 +166,27 @@ class Indexer:
                     candidates |= {f"wiki/{p}" for p in self._wiki_files(repo)}
                 mode = "incremental"
         return self.reindex(repo, candidates=candidates, mode=mode, progress=progress)
+
+    def remove(self, repo_name: str, delete_memories: bool = True) -> dict:
+        """Delete a repo's index and its managed clone. A user's own local folder is never touched."""
+        repo = repo_db.get_repo(self.pool, repo_name)
+        if repo is None:
+            raise KeyError(f"unknown repo {repo_name!r}")
+        with self.pool.connection() as lock_conn:  # waits for any running index of this repo
+            lock_conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_BASE + repo.id,))
+            lock_conn.commit()
+            try:
+                counts = repo_db.remove_repo(self.pool, repo.id, repo.name, delete_memories)
+            finally:
+                lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_BASE + repo.id,))
+                lock_conn.commit()
+        removed_dirs = []
+        if repo.managed:
+            for path in (repo.local_path, repo.wiki_path):
+                if path and _delete_managed_dir(Path(path), self.settings.repos_dir):
+                    removed_dirs.append(path)
+        log.info("repo removed", extra={"repo": repo.name, **counts})
+        return {"repo": repo.name, **counts, "deleted_clone": bool(removed_dirs)}
 
     # ---------------- core ----------------
     def _wiki_files(self, repo: repo_db.RepoRecord) -> list[str]:

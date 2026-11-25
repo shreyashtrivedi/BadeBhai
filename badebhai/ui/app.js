@@ -93,6 +93,9 @@ async function init() {
   $("#clear-memory").addEventListener("click", clearMemories);
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
   $("#messages").addEventListener("click", (e) => { const b = e.target.closest(".cite"); if (b) focusCitation(Number(b.dataset.n)); });
+  $("#panel-citations").addEventListener("click", (e) => { const b = e.target.closest("[data-view]"); if (b) viewCitation(Number(b.dataset.view)); });
+  $("#code-close").addEventListener("click", () => $("#code-dialog").close());
+  $("#code-dialog").addEventListener("click", (e) => { if (e.target === $("#code-dialog")) $("#code-dialog").close(); });
 }
 
 function showTab(name) {
@@ -113,6 +116,7 @@ async function ask() {
   msgs.insertAdjacentHTML("beforeend", `<div class="msg user"><div class="bubble">${esc(question)}</div></div>`);
   const holder = document.createElement("div");
   holder.className = "msg assistant";
+  holder.dataset.question = question;
   holder.innerHTML = `<div class="bubble streaming">…</div>`;
   msgs.appendChild(holder);
   msgs.scrollTop = msgs.scrollHeight;
@@ -169,6 +173,7 @@ function parseSse(block) {
 
 function renderFinal(holder, r) {
   state.citations = r.citations || [];
+  state.citationsRepo = r.repo;
   const bubble = holder.querySelector(".bubble");
   bubble.classList.remove("streaming");
   bubble.innerHTML = renderMarkdown(r.answer || "", state.citations);
@@ -194,6 +199,7 @@ function renderFinal(holder, r) {
   for (const w of r.warnings || []) extra += `<div class="notice">${esc(w)}</div>`;
   if (v.invalid_citations?.length) extra += `<div class="notice">Verifier removed ${v.invalid_citations.length} citation(s): ${esc(v.invalid_citations.map((x) => x.problem).join("; "))}</div>`;
   holder.insertAdjacentHTML("beforeend", extra);
+  addFeedback(holder, r);
   renderCitations();
   renderTrace(r.trace || [], r.tool_calls || []);
   setStatus(r.thread_id ? `Thread ${r.thread_id}` : "");
@@ -207,7 +213,10 @@ function renderCitations() {
   if (!state.citations.length) { panel.innerHTML = `<p class="hint">No citations in this answer.</p>`; return; }
   panel.innerHTML = state.citations.map((c) => {
     const url = safeUrl(c.url);
-    const label = url ? `<a class="label" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(c.label)}</a>` : `<span class="label">${esc(c.label)}</span>`;
+    const viewable = (c.type === "code" || c.type === "doc") && c.path;
+    const label = viewable
+      ? `<button type="button" class="label link" data-view="${c.id}" title="View the code">${esc(c.label)}</button>${url ? ` <a class="ext" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open on GitHub">↗</a>` : ""}`
+      : url ? `<a class="label" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(c.label)}</a>` : `<span class="label">${esc(c.label)}</span>`;
     return `<div class="citation" id="cite-${c.id}">
       <div class="row"><span class="num">[${c.id}]</span><span class="type">${esc(c.type)}</span>${label}</div>
       <div class="title">${esc(c.title)}</div>
@@ -329,6 +338,7 @@ function renderRepoList() {
       <div class="actions">
         ${r.last_indexed_commit ? `<button type="button" class="link" data-ask="${esc(r.name)}">Ask</button>` : ""}
         ${canUpdate ? `<button type="button" class="link" data-update="${esc(r.name)}" title="Download new commits and re-read changed files">Check for updates</button>` : ""}
+        ${r.last_indexed_commit ? `<button type="button" class="link danger" data-remove="${esc(r.name)}" title="Remove from BadeBhai">Remove</button>` : ""}
       </div></li>`;
   }).join("");
 }
@@ -343,9 +353,10 @@ function initAddRepo() {
   $("#add-form").addEventListener("submit", (e) => { e.preventDefault(); addRepo(); });
   document.querySelectorAll(".example-src").forEach((b) => b.addEventListener("click", () => { $("#add-source").value = b.textContent.trim(); $("#add-source").focus(); }));
   $("#repo-list").addEventListener("click", (e) => {
-    const ask = e.target.closest("[data-ask]"), upd = e.target.closest("[data-update]");
+    const ask = e.target.closest("[data-ask]"), upd = e.target.closest("[data-update]"), rm = e.target.closest("[data-remove]");
     if (ask) useRepo(ask.dataset.ask);
     if (upd) updateRepo(upd.dataset.update);
+    if (rm) removeRepo(rm.dataset.remove);
   });
   $("#add-progress").addEventListener("click", (e) => {
     const ask = e.target.closest("[data-ask]"), upd = e.target.closest("[data-update]");
@@ -518,6 +529,79 @@ function renderJob(job, repo, kind, about, warnings, samples) {
   out.innerHTML = `<div class="job ${job.status}">
     <div class="job-title">${kind === "sync" ? "Updating" : "Adding"} <strong>${esc(repo)}</strong></div>${desc}
     <ol class="stages">${steps}</ol>${body}${warn}</div>`;
+}
+
+// ---------------------------------------------------------------- remove a repository
+async function removeRepo(name) {
+  if (!confirm(`Remove ${name} from BadeBhai?\n\nThis deletes its index, its downloaded copy, and what BadeBhai remembers about it. The repository itself is not touched, and you can add it again any time.`)) return;
+  try {
+    const path = name.split("/").map(encodeURIComponent).join("/");
+    await api(`/repos/${path}`, { method: "DELETE" });
+    if ($("#repo").value === name) store.del("badebhai.repo");
+    await loadRepos();
+    loadMemories();
+    setStatus(`Removed ${name}.`);
+  } catch (e) { setStatus(`Couldn't remove ${name}: ${e.message}`, true); }
+}
+
+// ---------------------------------------------------------------- 👍 / 👎
+function addFeedback(holder, r) {
+  const box = document.createElement("div");
+  box.className = "feedback";
+  box.innerHTML = `<span class="muted small">Was this helpful?</span>
+    <button type="button" class="thumb" data-rate="1" aria-label="Helpful">👍</button>
+    <button type="button" class="thumb" data-rate="-1" aria-label="Not helpful">👎</button>`;
+  holder.appendChild(box);
+  const send = async (rating, comment = null) => {
+    box.innerHTML = `<span class="muted small">Saving…</span>`;
+    try {
+      await api("/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        repo: r.repo, question: holder.dataset.question || "", answer: r.answer || "", rating, comment,
+        mode: r.mode, thread_id: r.thread_id, user_id: $("#user").value.trim() || "anonymous",
+        citations: (r.citations || []).map((c) => ({ id: c.id, type: c.type, label: c.label, valid: c.valid })),
+      }) });
+      box.innerHTML = `<span class="muted small">${rating > 0 ? "Thanks!" : "Thanks. This question will help improve BadeBhai's tests."}</span>`;
+    } catch (e) { box.innerHTML = `<span class="muted small">Couldn't save feedback: ${esc(e.message)}</span>`; }
+  };
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-rate]");
+    if (!b) return;
+    if (b.dataset.rate === "1") { send(1); return; }
+    box.innerHTML = `<input type="text" class="fb-comment" maxlength="2000" placeholder="What was wrong or missing? (optional)">
+      <button type="button" class="fb-send">Send</button>`;
+    const input = box.querySelector(".fb-comment");
+    input.focus();
+    box.querySelector(".fb-send").addEventListener("click", () => send(-1, input.value.trim() || null));
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") send(-1, input.value.trim() || null); });
+  });
+}
+
+// ---------------------------------------------------------------- code viewer
+async function viewCitation(n) {
+  const c = state.citations.find((x) => x.id === n);
+  if (!c?.path) return;
+  const dlg = $("#code-dialog"), body = $("#code-body");
+  $("#code-title").textContent = c.path;
+  const repo = state.citationsRepo || $("#repo").value;
+  $("#code-sub").textContent = c.start_line ? `lines ${c.start_line}–${c.end_line || c.start_line} · ${repo}` : repo;
+  const gh = safeUrl(c.url);
+  $("#code-github").hidden = !gh;
+  if (gh) $("#code-github").href = gh;
+  body.innerHTML = `<p class="muted small" style="padding:16px">Loading…</p>`;
+  if (!dlg.open) dlg.showModal();
+  try {
+    const f = await api(`/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(c.path)}`);
+    const lo = c.start_line || 0, hi = c.end_line || lo;
+    const rows = f.content.split("\n").map((ln, i) => {
+      const no = i + 1;
+      return `<div class="ln${no >= lo && no <= hi ? " hl" : ""}" id="L${no}"><span class="no">${no}</span><span class="tx">${esc(ln) || " "}</span></div>`;
+    }).join("");
+    body.innerHTML = `<div class="code">${rows}</div>${f.truncated ? `<p class="muted small" style="padding:8px 16px">Showing the first ${f.content.split("\n").length.toLocaleString()} lines.</p>` : ""}`;
+    const target = body.querySelector(`#L${Math.max(1, lo - 3)}`);
+    if (target) body.scrollTop = target.offsetTop - 8;
+  } catch (e) {
+    body.innerHTML = `<p class="err-line" style="padding:16px">${esc(e.message)}</p>${c.snippet ? `<pre class="snippet">${esc(c.snippet)}</pre>` : ""}`;
+  }
 }
 
 init();

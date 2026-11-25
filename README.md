@@ -12,6 +12,8 @@ It is an agentic RAG system: a LangGraph agent decomposes the question, calls da
 separate **MCP servers**, grades its own evidence (re-planning weak searches), and writes a cited
 answer, or says "insufficient evidence" when the repository does not support one.
 
+![BadeBhai answering a question about psf/requests with verified citations](docs/screenshot.png)
+
 Real output from the default local model (`qwen3:4b-instruct` on a laptop RTX 3050 with 4 GB VRAM):
 
 ```text
@@ -169,9 +171,13 @@ flowchart LR
 
 ## Using it
 
-**Web UI** (`/`): add repositories, ask questions, watch the agent's steps stream in (sub-questions,
-MCP tool calls, grading, verification), click `[n]` chips to open the cited code, commit or issue,
-and see or delete what BadeBhai remembers about you.
+**Web UI** (`/`): add, update and remove repositories; ask questions and watch the agent's steps
+stream in (sub-questions, MCP tool calls, grading, verification); click a citation to read the cited
+lines in a built-in code viewer (or jump to the commit/issue on GitHub); rate answers 👍/👎; and see or
+delete what BadeBhai remembers about you.
+
+**From your editor**: Claude Code, Cursor, VS Code and other MCP clients can ask BadeBhai directly
+(`ask`, `list_repos`, `add_repo`) or use its raw search tools. Setup: [docs/editors.md](docs/editors.md).
 
 **API**
 
@@ -180,13 +186,19 @@ and see or delete what BadeBhai remembers about you.
 | `POST /ask` | `{"question", "repo", "mode": "agent"\|"naive", "user_id", "thread_id"}` returns the answer, citations, verification report, trace, sub-questions, tool calls, usage |
 | `POST /ask/stream` | the same as server-sent events: `start`, `step`, `tool`, `token`, `final`, `error` |
 | `GET /memories?user_id=&repo=` · `DELETE /memories/{id}?user_id=` · `DELETE /memories?user_id=` | user control over long-term memory |
-| `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update |
+| `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` · `DELETE /repos/{name}` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update, remove (index + downloaded copy + memories; `?keep_memories=true`) |
+| `GET /file?repo=&path=` | an indexed file's text for the code viewer (secrets redacted; only indexed files) |
+| `POST /feedback` · `GET /feedback?repo=&rating=` | 👍/👎 on answers, with an optional comment |
 | `GET /jobs/{id}` · `GET /jobs?status=running` · `GET /setup` | progress of adds and updates (`stage`, `done`/`total` files); whether a GitHub token is configured |
 | `POST /webhooks/github` | GitHub push webhook (HMAC-SHA256 verified) |
 | `GET /search?repo=&q=&kind=code\|doc\|all` · `GET /tools` | debugging: raw hybrid search, discovered MCP tools |
 
-**CLI**: `badebhai ingest | sync [--watch] | repos | search | ask | serve | mcp up | mcp serve |
-memories list|delete|clear | eval | reset-db`.
+**CLI**: `badebhai ingest | sync [--watch] | repos | remove | search | ask | serve | mcp up | mcp serve |
+memories list|delete|clear | feedback list|export | eval | reset-db`.
+
+**Feedback becomes tests.** `badebhai feedback export --out new.yaml` turns every 👎 into a golden-set
+stub (the real question, the answer it got, the user's comment); fill in the expected files and key
+facts, add it to the eval, and that failure is measured from then on.
 
 **MCP servers** can also be used on their own from any MCP-compatible client:
 `uv run badebhai mcp serve git_history --transport stdio`.
@@ -196,6 +208,7 @@ memories list|delete|clear | eval | reset-db`.
 | `code_search` | 8101 | `search_code`, `read_code`, `file_outline`, `list_files` |
 | `git_history` | 8102 | `search_commits`, `get_commit`, `blame`, `file_history`, `recent_changes`, `search_issues`, `get_issue`, `prs_for_commit` |
 | `docs` | 8103 | `search_docs`, `read_doc`, `list_docs` |
+| `assistant` | 8104 | `ask`, `list_repos`, `add_repo` (a thin client of the API, for editors) |
 
 ## How it works
 
@@ -345,7 +358,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 127 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 132 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

@@ -22,6 +22,7 @@ class GoldenQuestion:
     expected_issue: bool = False
     sources: list[str] = field(default_factory=list)
     answerable: bool = True
+    notes: str = ""  # free text for maintainers (e.g. where a question came from)
 
     @property
     def has_expectations(self) -> bool:

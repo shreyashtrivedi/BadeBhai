@@ -82,6 +82,8 @@ services:
   mcp-code:
     <<: *app
     command: ["python", "-m", "badebhai.mcp_servers.code_search", "--host", "0.0.0.0", "--port", "8101"]
+    ports:
+      - "127.0.0.1:8101:8101"  # localhost only: lets editors (Claude Code, Cursor, VS Code) use it
     depends_on:
       db: { condition: service_healthy }
     healthcheck:
@@ -91,6 +93,8 @@ services:
   mcp-git:
     <<: *app
     command: ["python", "-m", "badebhai.mcp_servers.git_history", "--host", "0.0.0.0", "--port", "8102"]
+    ports:
+      - "127.0.0.1:8102:8102"  # localhost only: lets editors (Claude Code, Cursor, VS Code) use it
     depends_on:
       db: { condition: service_healthy }
     healthcheck:
@@ -100,6 +104,8 @@ services:
   mcp-docs:
     <<: *app
     command: ["python", "-m", "badebhai.mcp_servers.docs", "--host", "0.0.0.0", "--port", "8103"]
+    ports:
+      - "127.0.0.1:8103:8103"  # localhost only: lets editors (Claude Code, Cursor, VS Code) use it
     depends_on:
       db: { condition: service_healthy }
     healthcheck:

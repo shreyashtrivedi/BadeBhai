@@ -101,4 +101,4 @@ def reset_database(settings: Settings | None = None) -> None:
     s = settings or get_settings()
     close_pools()
     with psycopg.connect(s.database_url, autocommit=True) as conn:
-        conn.execute("DROP TABLE IF EXISTS chunks, files, memories, repos, schema_meta CASCADE")
+        conn.execute("DROP TABLE IF EXISTS chunks, files, memories, feedback, repos, schema_meta CASCADE")

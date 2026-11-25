@@ -9,12 +9,12 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from badebhai import __version__
@@ -26,10 +26,12 @@ from badebhai.app.naive import answer_naive
 from badebhai.app.onboarding import TOKEN_URL, AddRepoError, check_source, explain_failure
 from badebhai.app.schemas import AskRequest, AskResponse
 from badebhai.config import Settings, configure_tracing, get_settings
+from badebhai.db import feedback as feedback_db
 from badebhai.db import repos as repo_db
 from badebhai.db.pool import get_pool
 from badebhai.embeddings import get_embedder
 from badebhai.ingestion.indexer import Indexer
+from badebhai.ingestion.secrets import redact
 from badebhai.ingestion.sync import poll_forever
 from badebhai.ingestion.webhook import parse_push, verify_signature
 from badebhai.llm import LLMError, LLMProvider, LLMUnavailable, get_llm, track_usage
@@ -47,7 +49,20 @@ class IngestRequest(BaseModel):
     name: str | None = None
 
 
+class FeedbackRequest(BaseModel):
+    repo: str
+    question: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(max_length=40000)
+    rating: Literal[-1, 1]
+    user_id: str = "anonymous"
+    mode: str | None = None
+    thread_id: str | None = None
+    comment: str | None = Field(default=None, max_length=2000)
+    citations: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+
+
 _MAX_JOBS_KEPT = 50
+_VIEW_MAX_LINES = 4000
 
 
 def create_app(
@@ -298,6 +313,68 @@ def create_app(
             repo=full,
         )
         return {"job_id": job_id, "status": "running", "repo": full}
+
+    @app.delete("/repos/{name:path}")
+    async def remove_repo(request: Request, name: str, keep_memories: bool = False) -> dict:
+        """Remove a repo: its index, its downloaded copy (never a local folder you pointed at), and,
+        unless keep_memories, what users told BadeBhai about it."""
+        _repo(request, name)
+        if _running_job(request.app, name):
+            raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
+        return await asyncio.to_thread(request.app.state.indexer.remove, name, not keep_memories)
+
+    @app.get("/file")
+    async def view_file(request: Request, repo: str, path: str) -> dict:
+        """An indexed file's text for the citation viewer (secrets redacted, like everything indexed).
+        Only files in the index can be read: never .env, binaries, or anything outside the repo."""
+        r = _repo(request, repo)
+        rel = path.strip().lstrip("./")
+        n_lines = await asyncio.to_thread(repo_db.file_line_count, request.app.state.pool, r.id, rel)
+        if n_lines is None:
+            raise HTTPException(404, f"{rel!r} is not an indexed file of {repo}")
+        try:
+            raw = await asyncio.to_thread(r.resolve(rel).read_text, encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            raise HTTPException(404, f"{rel!r} can no longer be read; the repo may need an update") from None
+        lines = redact(raw)[0].split("\n")
+        truncated = len(lines) > _VIEW_MAX_LINES
+        return {
+            "repo": r.name,
+            "path": rel,
+            "commit": r.last_indexed_commit,
+            "url": r.file_url(rel),
+            "line_count": n_lines,
+            "truncated": truncated,
+            "content": "\n".join(ln.rstrip("\r") for ln in lines[:_VIEW_MAX_LINES]),
+        }
+
+    @app.post("/feedback", status_code=201)
+    async def add_feedback(request: Request, body: FeedbackRequest) -> dict:
+        r = _repo(request, body.repo)
+        fid = await asyncio.to_thread(
+            feedback_db.add,
+            request.app.state.pool,
+            user_id=body.user_id,
+            repo=r.name,
+            commit=r.last_indexed_commit,
+            question=body.question,
+            answer=body.answer,
+            rating=body.rating,
+            mode=body.mode,
+            thread_id=body.thread_id,
+            comment=body.comment,
+            citations=body.citations,
+        )
+        return {"id": fid}
+
+    @app.get("/feedback")
+    async def list_feedback(
+        request: Request, repo: str | None = None, rating: int | None = None, limit: int = 100
+    ) -> dict:
+        pool = request.app.state.pool
+        rows = await asyncio.to_thread(feedback_db.list_feedback, pool, repo, rating, min(limit, 500))
+        totals = await asyncio.to_thread(feedback_db.summary, pool, repo)
+        return {"totals": totals, "items": rows}
 
     @app.get("/jobs")
     async def list_jobs(request: Request, status: str | None = None) -> list[dict]:

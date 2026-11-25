@@ -234,6 +234,33 @@ dialog#add-dialog::backdrop { background: rgba(20, 20, 18, .45); }
 .repo-list .name a:hover { text-decoration: underline; }
 .repo-list .actions { display: flex; gap: 14px; flex-shrink: 0; font-size: 13px; }
 
+/* ---------------------------------------------------------------- feedback */
+.feedback { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.thumb { padding: 2px 8px; font-size: 14px; line-height: 1.4; background: var(--surface); }
+.fb-comment { flex: 1; min-width: 200px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+
+/* ---------------------------------------------------------------- code viewer */
+.citation .label.link { font-family: var(--mono); font-size: 12.5px; text-align: left; word-break: break-all; }
+.citation .ext { color: var(--muted); text-decoration: none; font-size: 12px; }
+dialog#code-dialog {
+  width: min(1000px, calc(100vw - 32px)); height: min(80vh, 900px); padding: 0; border: 1px solid var(--border);
+  border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgba(0, 0, 0, .25);
+}
+dialog#code-dialog[open] { display: flex; flex-direction: column; }
+dialog#code-dialog::backdrop { background: rgba(20, 20, 18, .45); }
+.code-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.code-title { font-family: var(--mono); font-size: 14px; font-weight: 600; word-break: break-all; }
+.code-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; font-size: 13px; }
+.code-actions a { color: var(--accent); }
+.code-actions .close { border: none; background: none; font-size: 24px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+.code-body { flex: 1; overflow: auto; background: var(--code-bg); position: relative; }
+.code { font: 12.5px/1.55 var(--mono); padding: 6px 0; min-width: max-content; }
+.code .ln { display: flex; white-space: pre; padding-right: 16px; }
+.code .ln.hl { background: var(--accent-soft); }
+.code .no { display: inline-block; width: 56px; flex-shrink: 0; text-align: right; padding-right: 14px; color: var(--muted); user-select: none; }
+.code .ln.hl .no { color: var(--accent); font-weight: 600; }
+.snippet { margin: 0 16px 16px; white-space: pre-wrap; font: 12px/1.45 var(--mono); }
+
 @media (max-width: 900px) {
   .add-row { flex-direction: column; }
   .add-row button { padding: 10px; }
