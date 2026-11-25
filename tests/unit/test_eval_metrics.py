@@ -34,3 +34,10 @@ def test_summary_uses_the_adjusted_judge_score():
     assert s["judge_correctness"] == 0.5
     assert s["over_abstention"] == 0.5
     assert s["judge_by_category"] == {"location": 0.5}
+
+
+def test_refusals_phrased_as_does_not_manage_count_as_insufficient():
+    from repomind.evals.metrics import said_insufficient
+
+    assert said_insufficient("Requests does not manage WebSocket connections or heartbeat intervals.")
+    assert not said_insufficient("Requests manages connection pools through urllib3 [1].")

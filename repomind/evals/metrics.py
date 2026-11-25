@@ -13,7 +13,7 @@ K_VALUES = (1, 3, 5, 10)
 
 _INSUFFICIENT = re.compile(
     r"(?i)insufficient evidence|couldn'?t find|could not find|no evidence|did not find|didn'?t find|"
-    r"not (?:implemented|supported|present) in|does(?:n'?t| not) (?:implement|support|contain|include|have|provide)|"
+    r"not (?:implemented|supported|present) in|does(?:n'?t| not) (?:implement|support|contain|include|have|provide|manage|handle|offer)|"
     r"there is no (?:graphql|websocket|http/3|quic)"
 )
 

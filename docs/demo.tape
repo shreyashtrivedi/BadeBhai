@@ -1,5 +1,5 @@
 # VHS script for the terminal demo: `vhs docs/demo.tape` -> docs/demo.gif
-# Needs: docker compose stack running (or local `uv run repomind serve`), ANTHROPIC_API_KEY in .env.
+# Needs: docker compose stack running (or local `uv run repomind serve`); runs fully on the local model.
 
 Output docs/demo.gif
 Set FontSize 15

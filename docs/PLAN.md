@@ -52,9 +52,8 @@ tests/                    unit + integration (fake LLM, in-memory MCP, real Post
 |---|---|---|
 | Project layout | `repomind/` is the single Python package; evals/ui live inside it | one installable package, `repomind` CLI |
 | MCP transport | streamable HTTP by default (stdio supported) | servers run as separate processes/containers; on Windows, async psycopg (checkpointer) needs the selector loop, which can't spawn stdio subprocesses |
-| LLM | `claude-opus-5-5` for all roles; `LLM_FAST_MODEL` overrides decompose/grade/memory | cost is your call; one switch to change it |
-| Structured LLM output | JSON-schema structured outputs (`output_config.format`) | forced tool choice is not available on current models |
-| Refusal fallback | server-side `fallbacks: "default"` on, `LLM_FALLBACKS=off` disables | recommended default for current Claude models |
+| LLM | **Revised: free and local.** Ollama with an open model (`qwen3:4b-instruct`) by default; Claude is an optional extra | the project must have zero running cost; the provider interface made the swap a single module |
+| Structured LLM output | JSON schema as Ollama `format` (grammar-constrained) / `output_config.format` for Claude | parseable JSON from small models without tool calling |
 | Commits / blame / diffs | local git clone | no rate limit, exact line data |
 | Issues / PRs | GitHub REST, live, TTL cache | always current; never bulk-indexed |
 | Code + docs storage | one `chunks` table, `kind` = code or doc | the same hybrid search serves both MCP servers |
