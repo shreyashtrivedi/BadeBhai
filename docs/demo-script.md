@@ -27,6 +27,6 @@ Use a fresh user id such as `demo-user` so the memory panel starts empty.
 
 ## Live-update beat (optional, 20 s)
 
-Index a repo you can push to (`uv run repomind ingest owner/your-repo`), add a function, push, and
+Index a repo you can push to (`uv run badebhai ingest owner/your-repo`), add a function, push, and
 ask about it. With the webhook (`POST /webhooks/github`, forwarded with smee.io) or
-`uv run repomind sync --all --watch --interval 10`, it is answerable within seconds.
+`uv run badebhai sync --all --watch --interval 10`, it is answerable within seconds.

@@ -6,9 +6,9 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from repomind.config import Settings
-from repomind.llm import LLMUnavailable, get_llm, track_usage
-from repomind.llm.ollama_provider import OllamaProvider, _ThinkFilter, extract_json, strip_think
+from badebhai.config import Settings
+from badebhai.llm import LLMUnavailable, get_llm, track_usage
+from badebhai.llm.ollama_provider import OllamaProvider, _ThinkFilter, extract_json, strip_think
 
 S = Settings(_env_file=None, llm_provider="ollama", ollama_model="qwen3:4b-instruct", ollama_num_ctx=8192)
 

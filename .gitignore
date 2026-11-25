@@ -16,7 +16,7 @@ build/
 # Local data: cloned repos, model caches, eval scratch
 data/
 .hf_cache/
-repomind/evals/reports/raw/
+badebhai/evals/reports/raw/
 
 # OS / editors
 .DS_Store

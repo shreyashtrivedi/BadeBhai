@@ -2,8 +2,8 @@
 
 import pytest
 
-from repomind.db.pool import get_pool
-from repomind.ingestion.indexer import Indexer
+from badebhai.db.pool import get_pool
+from badebhai.ingestion.indexer import Indexer
 from tests.integration.helpers import fake_github, toolbox_factory
 
 pytestmark = pytest.mark.db
@@ -98,7 +98,7 @@ async def test_tool_budget_and_argument_validation(indexed):
         assert missing["error_type"] == "bad_arguments"  # rejected client-side, does not count
         await tb.call("search_code", {"repo": "tiny", "query": "a"})
         await tb.call("search_code", {"repo": "tiny", "query": "b"})
-        from repomind.app.mcp_client import ToolBudgetExceeded
+        from badebhai.app.mcp_client import ToolBudgetExceeded
 
         with pytest.raises(ToolBudgetExceeded):
             await tb.call("search_code", {"repo": "tiny", "query": "c"})

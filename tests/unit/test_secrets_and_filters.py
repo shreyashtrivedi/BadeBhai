@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from repomind.ingestion.filters import list_candidate_files, read_text_file
-from repomind.ingestion.secrets import REDACTED, contains_secret, redact
+from badebhai.ingestion.filters import list_candidate_files, read_text_file
+from badebhai.ingestion.secrets import REDACTED, contains_secret, redact
 
 
 def test_redacts_known_token_formats_and_preserves_lines():

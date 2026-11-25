@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from repomind.db import repos as repo_db
-from repomind.db.pool import get_pool
-from repomind.embeddings import get_embedder
-from repomind.ingestion.indexer import Indexer
-from repomind.retrieval.hybrid import hybrid_search
+from badebhai.db import repos as repo_db
+from badebhai.db.pool import get_pool
+from badebhai.embeddings import get_embedder
+from badebhai.ingestion.indexer import Indexer
+from badebhai.retrieval.hybrid import hybrid_search
 
 pytestmark = pytest.mark.db
 

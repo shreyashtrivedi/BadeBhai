@@ -1,14 +1,14 @@
-# RepoMind (BadeBhai): build plan
+# BadeBhai: build plan
 
 This is the Stage 0 plan. It stays in the repo so the reasoning behind the layout is visible.
 
 ## Module plan
 
 ```
-repomind/
+badebhai/
   config.py               Settings (pydantic-settings, .env)
   log.py                  JSON structured logging
-  cli.py                  `repomind` CLI: ingest, sync, serve, mcp, ask, memories, eval
+  cli.py                  `badebhai` CLI: ingest, sync, serve, mcp, ask, memories, eval
   db/
     schema.sql            repos, files, chunks (pgvector + tsvector), memories
     pool.py               psycopg connection pool + schema bootstrap
@@ -25,7 +25,7 @@ repomind/
     sources.py            clone / local path / wiki clone, git helpers
     indexer.py            full + incremental indexing keyed by content hash and last indexed commit
     webhook.py            GitHub signature verification + push handling
-    sync.py               `repomind sync` (diff from last indexed commit) + polling loop
+    sync.py               `badebhai sync` (diff from last indexed commit) + polling loop
   retrieval/hybrid.py     vector (HNSW cosine) + full-text (tsvector) fused with reciprocal rank fusion
   mcp_servers/
     code_search.py        search_code, read_code, list_files, file_outline
@@ -50,7 +50,7 @@ tests/                    unit + integration (fake LLM, in-memory MCP, real Post
 
 | Decision | Choice | Why |
 |---|---|---|
-| Project layout | `repomind/` is the single Python package; evals/ui live inside it | one installable package, `repomind` CLI |
+| Project layout | `badebhai/` is the single Python package; evals/ui live inside it | one installable package, `badebhai` CLI |
 | MCP transport | streamable HTTP by default (stdio supported) | servers run as separate processes/containers; on Windows, async psycopg (checkpointer) needs the selector loop, which can't spawn stdio subprocesses |
 | LLM | **Revised: free and local.** Ollama with an open model (`qwen3:4b-instruct`) by default; Claude is an optional extra | the project must have zero running cost; the provider interface made the swap a single module |
 | Structured LLM output | JSON schema as Ollama `format` (grammar-constrained) / `output_config.format` for Claude | parseable JSON from small models without tool calling |
@@ -66,7 +66,7 @@ tests/                    unit + integration (fake LLM, in-memory MCP, real Post
 ## Stages
 
 1. Core: compose with Postgres+pgvector, ingestion, tree-sitter chunking, embeddings, hybrid search, `/ask` (naive RAG) with file:line citations.
-2. Live + multi-source: three MCP servers, incremental indexing, webhook + `repomind sync` + polling; agent calls tools via MCP.
+2. Live + multi-source: three MCP servers, incremental indexing, webhook + `badebhai sync` + polling; agent calls tools via MCP.
 3. Agent brain: decompose, parallel retrieve, grade with query-rewrite retries, synthesize, citation verifier, long-term memory, LangSmith, SSE.
 4. Quality: 30+ golden questions, hit@k, citation validity, LLM-judge correctness, latency/cost; naive vs agentic table.
 5. Polish: web UI with trace, one-command Docker start, README with a Mermaid diagram, demo script, limitations.

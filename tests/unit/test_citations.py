@@ -1,7 +1,7 @@
 """Citation verifier: bad citations must be caught programmatically."""
 
-from repomind.app.citations import UNVERIFIED_MARK, check_evidence, verify_answer
-from repomind.app.schemas import Evidence
+from badebhai.app.citations import UNVERIFIED_MARK, check_evidence, verify_answer
+from badebhai.app.schemas import Evidence
 
 FILE = "\n".join(f"line {i}" for i in range(1, 101))
 

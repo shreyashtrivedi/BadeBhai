@@ -5,9 +5,9 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from repomind.app.api import create_app
-from repomind.ingestion.indexer import Indexer
-from repomind.llm.fake import FakeLLM
+from badebhai.app.api import create_app
+from badebhai.ingestion.indexer import Indexer
+from badebhai.llm.fake import FakeLLM
 
 pytestmark = pytest.mark.db
 

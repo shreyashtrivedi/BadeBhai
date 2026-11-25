@@ -1,4 +1,4 @@
-name: repomind
+name: badebhai
 
 # Completely free, self-hosted stack. One command: `docker compose up --build`, then open
 # http://localhost:8000. On an NVIDIA GPU machine add the GPU override for much faster answers:
@@ -7,13 +7,13 @@ name: repomind
 # (psf/requests @ v2.32.3).
 
 x-app: &app
-  image: repomind:latest
+  image: badebhai:latest
   pull_policy: never  # built once by the `api` service
   env_file:
     - path: .env
       required: false
   environment: &app-env
-    DATABASE_URL: postgresql://repomind:repomind@db:5432/repomind
+    DATABASE_URL: postgresql://badebhai:badebhai@db:5432/badebhai
     DATA_DIR: /data
     MCP_TRANSPORT: http
     MCP_CODE_SEARCH_URL: http://mcp-code:8101/mcp
@@ -37,20 +37,20 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: repomind
-      POSTGRES_PASSWORD: repomind
-      POSTGRES_DB: repomind
+      POSTGRES_USER: badebhai
+      POSTGRES_PASSWORD: badebhai
+      POSTGRES_DB: badebhai
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U repomind -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U badebhai -d postgres"]
       interval: 3s
       timeout: 3s
       retries: 20
 
-  # Local LLM server (free, open models). Port published so `uv run repomind ...` on the host can use it.
+  # Local LLM server (free, open models). Port published so `uv run badebhai ...` on the host can use it.
   ollama:
     image: ollama/ollama:0.40.18
     environment:
@@ -81,7 +81,7 @@ services:
 
   mcp-code:
     <<: *app
-    command: ["python", "-m", "repomind.mcp_servers.code_search", "--host", "0.0.0.0", "--port", "8101"]
+    command: ["python", "-m", "badebhai.mcp_servers.code_search", "--host", "0.0.0.0", "--port", "8101"]
     depends_on:
       db: { condition: service_healthy }
     healthcheck:
@@ -90,7 +90,7 @@ services:
 
   mcp-git:
     <<: *app
-    command: ["python", "-m", "repomind.mcp_servers.git_history", "--host", "0.0.0.0", "--port", "8102"]
+    command: ["python", "-m", "badebhai.mcp_servers.git_history", "--host", "0.0.0.0", "--port", "8102"]
     depends_on:
       db: { condition: service_healthy }
     healthcheck:
@@ -99,7 +99,7 @@ services:
 
   mcp-docs:
     <<: *app
-    command: ["python", "-m", "repomind.mcp_servers.docs", "--host", "0.0.0.0", "--port", "8103"]
+    command: ["python", "-m", "badebhai.mcp_servers.docs", "--host", "0.0.0.0", "--port", "8103"]
     depends_on:
       db: { condition: service_healthy }
     healthcheck:
@@ -110,7 +110,7 @@ services:
     <<: *app
     build: .
     pull_policy: build
-    command: ["repomind", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]
+    command: ["badebhai", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]
     environment:
       <<: *app-env
       AUTO_INGEST_REPO: ${AUTO_INGEST_REPO:-psf/requests@v2.32.3}

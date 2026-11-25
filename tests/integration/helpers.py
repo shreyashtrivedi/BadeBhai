@@ -7,10 +7,10 @@ import re
 
 import httpx
 
-from repomind.app.mcp_client import McpToolbox
-from repomind.mcp_servers import code_search, docs, git_history
-from repomind.mcp_servers.common import Deps
-from repomind.mcp_servers.github_client import GitHubClient
+from badebhai.app.mcp_client import McpToolbox
+from badebhai.mcp_servers import code_search, docs, git_history
+from badebhai.mcp_servers.common import Deps
+from badebhai.mcp_servers.github_client import GitHubClient
 
 ISSUE = {
     "number": 7,

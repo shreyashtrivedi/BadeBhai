@@ -8,9 +8,9 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from repomind.app.api import create_app
-from repomind.ingestion.indexer import Indexer
-from repomind.llm import get_llm
+from badebhai.app.api import create_app
+from badebhai.ingestion.indexer import Indexer
+from badebhai.llm import get_llm
 from tests.integration.helpers import toolbox_factory
 
 pytestmark = [pytest.mark.db, pytest.mark.live]
@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.db, pytest.mark.live]
 
 @pytest.fixture
 def live_settings(db_settings):
-    from repomind.config import LOCAL_PROFILE, Settings
+    from badebhai.config import LOCAL_PROFILE, Settings
 
     provider = os.environ.get("LLM_PROVIDER", "ollama")
     # Re-create (not copy) so provider-specific defaults such as the local profile apply.

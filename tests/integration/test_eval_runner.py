@@ -3,11 +3,11 @@
 import pytest
 import yaml
 
-from repomind import compat
-from repomind.evals.report import markdown, write
-from repomind.evals.runner import EvalRunner
-from repomind.ingestion.indexer import Indexer
-from repomind.llm.fake import FakeLLM
+from badebhai import compat
+from badebhai.evals.report import markdown, write
+from badebhai.evals.runner import EvalRunner
+from badebhai.ingestion.indexer import Indexer
+from badebhai.llm.fake import FakeLLM
 from tests.integration.helpers import evidence_ids, grade_all, plan
 
 pytestmark = pytest.mark.db

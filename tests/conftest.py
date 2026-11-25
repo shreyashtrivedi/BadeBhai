@@ -9,15 +9,15 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from repomind.config import Settings
+from badebhai.config import Settings
 
-if sys.platform == "win32":  # async psycopg needs a selector loop on Windows (see repomind/compat.py)
+if sys.platform == "win32":  # async psycopg needs a selector loop on Windows (see badebhai/compat.py)
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 ADMIN_URL = os.environ.get(
-    "TEST_ADMIN_DATABASE_URL", "postgresql://repomind:repomind@localhost:5433/repomind"
+    "TEST_ADMIN_DATABASE_URL", "postgresql://badebhai:badebhai@localhost:5433/badebhai"
 )
-TEST_DB = "repomind_test"
+TEST_DB = "badebhai_test"
 
 
 def _test_db_url() -> str | None:
@@ -66,7 +66,7 @@ def settings(tmp_path: Path) -> Settings:
 @pytest.fixture
 def db_settings(settings: Settings):
     """Settings bound to a clean test database."""
-    from repomind.db.pool import close_pools, reset_database
+    from badebhai.db.pool import close_pools, reset_database
 
     reset_database(settings)
     yield settings
@@ -126,7 +126,7 @@ def with_retries(fn, retries=MAX_RETRIES, backoff=0.5):
 
 README = """# Tiny Service
 
-A tiny HTTP client used in RepoMind tests.
+A tiny HTTP client used in BadeBhai tests.
 
 ## Authentication
 

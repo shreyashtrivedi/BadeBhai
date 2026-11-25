@@ -1,6 +1,6 @@
-# RepoMind (BadeBhai)
+# BadeBhai
 
-RepoMind answers questions about a GitHub repository by combining its **code, commit history,
+BadeBhai answers questions about a GitHub repository by combining its **code, commit history,
 issues/PRs and docs**. Every claim carries a citation that is checked programmatically, the index
 stays **live** as the repo changes, and the assistant **remembers** durable facts about each user.
 
@@ -16,7 +16,7 @@ Real output from the default local model (`qwen3:4b-instruct` on a laptop RTX 30
 
 ```text
 You:      Why was the retry logic added, and is it related to any open issues?
-RepoMind: The retry logic was added to enable automatic retries for failed HTTP connections, using
+BadeBhai: The retry logic was added to enable automatic retries for failed HTTP connections, using
           urllib3's `Retry` class, to improve resilience in network requests by handling transient
           failures such as timeouts, DNS lookups, and server errors [1][2]. This functionality is
           implemented in the `HTTPAdapter` class, where `max_retries` allows configuration of retry
@@ -54,8 +54,8 @@ Optionally copy `.env.example` to `.env` and add a free `GITHUB_TOKEN` (raises G
 ```bash
 python -m pip install uv && uv sync
 docker compose up -d db ollama ollama-pull    # Postgres+pgvector on :5433, Ollama on :11434 (+ model)
-uv run repomind ingest psf/requests@v2.32.3   # clone + index (any public repo or local path works)
-uv run repomind serve                         # http://localhost:8000, also starts the 3 MCP servers
+uv run badebhai ingest psf/requests@v2.32.3   # clone + index (any public repo or local path works)
+uv run badebhai serve                         # http://localhost:8000, also starts the 3 MCP servers
 ```
 
 A native Ollama install (ollama.com) works too: `ollama pull qwen3:4b-instruct` and keep
@@ -94,7 +94,7 @@ I touch to add a new top-level helper like requests.get?*
 flowchart LR
     subgraph clients[Clients]
         ui[Web UI]
-        cli[repomind CLI]
+        cli[badebhai CLI]
     end
 
     subgraph api[FastAPI backend]
@@ -117,7 +117,7 @@ flowchart LR
 
     subgraph ingest[Live ingestion]
         wh[POST /webhooks/github]
-        sync[repomind sync / polling]
+        sync[badebhai sync / polling]
         idx[Indexer<br/>tree-sitter chunks + embeddings]
     end
 
@@ -147,7 +147,7 @@ flowchart LR
 
 **Web UI** (`/`): ask questions, watch the agent's steps stream in (sub-questions, MCP tool calls,
 grading, verification), click `[n]` chips to open the cited code, commit or issue, and see or delete
-what RepoMind remembers about you.
+what BadeBhai remembers about you.
 
 **API**
 
@@ -160,11 +160,11 @@ what RepoMind remembers about you.
 | `POST /webhooks/github` | GitHub push webhook (HMAC-SHA256 verified) |
 | `GET /search?repo=&q=&kind=code\|doc\|all` · `GET /tools` | debugging: raw hybrid search, discovered MCP tools |
 
-**CLI**: `repomind ingest | sync [--watch] | repos | search | ask | serve | mcp up | mcp serve |
+**CLI**: `badebhai ingest | sync [--watch] | repos | search | ask | serve | mcp up | mcp serve |
 memories list|delete|clear | eval | reset-db`.
 
 **MCP servers** can also be used on their own from any MCP-compatible client:
-`uv run repomind mcp serve git_history --transport stdio`.
+`uv run badebhai mcp serve git_history --transport stdio`.
 
 | Server | Port | Tools |
 |---|---|---|
@@ -192,7 +192,7 @@ unsupported are flagged `⚠️(unverified)`, inline `path:line` references are 
 surviving citations are renumbered.
 
 **Live data.** Each file's sha256 and each repo's last indexed commit are stored. A signed push
-webhook, `repomind sync`, or polling diffs from the last indexed commit and re-chunks and re-embeds
+webhook, `badebhai sync`, or polling diffs from the last indexed commit and re-chunks and re-embeds
 only changed files, deleting chunks of removed files; a per-repo advisory lock serializes runs.
 Issues, PRs and commits are not bulk-indexed: `git_history` reads commits, blame and diffs from the
 local clone and issues/PRs live from GitHub (short TTL cache, retries with backoff, a clear message
@@ -218,7 +218,7 @@ calls, retries and request time are capped per question.
 ## Evaluation
 
 **Golden set:** 38 questions on `psf/requests` pinned at `v2.32.3`
-([golden YAML](repomind/evals/golden/requests_v2_32_3.yaml)): 14 location, 5 how-it-works,
+([golden YAML](badebhai/evals/golden/requests_v2_32_3.yaml)): 14 location, 5 how-it-works,
 7 history/why, 2 live-issue, 4 change-planning, 3 docs and 3 unanswerable. Each has expected files or
 commit shas and a reference answer checked against the snapshot (source, git history, HISTORY.md).
 
@@ -228,17 +228,17 @@ correctness (0-1 against the reference), "insufficient evidence" accuracy on una
 over-abstention, latency p50/p95, cost and LLM / tool calls per question.
 
 ```bash
-uv run repomind eval --retrieval-only     # no LLM calls: hit@k of the naive retrieval
-uv run repomind eval --limit 5            # both systems + judge on 5 questions (local model, free)
-uv run repomind eval                      # full run; writes repomind/evals/reports/latest.md
-uv run repomind eval --resume <run_id>    # continue an interrupted run (results are checkpointed)
+uv run badebhai eval --retrieval-only     # no LLM calls: hit@k of the naive retrieval
+uv run badebhai eval --limit 5            # both systems + judge on 5 questions (local model, free)
+uv run badebhai eval                      # full run; writes badebhai/evals/reports/latest.md
+uv run badebhai eval --resume <run_id>    # continue an interrupted run (results are checkpointed)
 ```
 
 ### Results
 
 Full run, all 38 questions, everything local and free: `qwen3:4b-instruct` via Ollama (also the
 judge) on a laptop RTX 3050 with 4 GB VRAM
-([report](repomind/evals/reports/20261125-114631.md)):
+([report](badebhai/evals/reports/20261125-114631.md)):
 
 | Metric | Naive RAG (1 hybrid search + 1 LLM call) | Agentic pipeline |
 |---|---|---|
@@ -271,7 +271,7 @@ How to read it:
 - \*The abstention detector missed one correct naive refusal ("Requests does not manage WebSocket
   connections") and reported 66.7%; the detector now recognises that phrasing.
 
-**What the eval changed.** The first full run ([before](repomind/evals/reports/20261125-090834-before-fixes.md))
+**What the eval changed.** The first full run ([before](badebhai/evals/reports/20261125-090834-before-fixes.md))
 had the agent *behind* naive on retrieval (hit@1 69.7%) and abstaining on 15% of answerable
 questions, with a judge score of 0.72. Traces of those failures led to five fixes, all deterministic
 code around the model rather than prompt tweaks: an empty sub-question block in the grader prompt
@@ -286,8 +286,8 @@ Earlier retrieval-only work:
 - hit@1 went from 42.9% to 71.4% after two changes the eval motivated: presenting code and doc hits
   interleaved instead of sorted by score (docs used to bury code on "where is X" questions), and
   grouping runs of tiny definitions such as the 25 small exception classes into one chunk
-  ([before](repomind/evals/reports/20261124-230021-before-interleave.md),
-  [after](repomind/evals/reports/20261124-230610.md)).
+  ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
+  [after](badebhai/evals/reports/20261124-230610.md)).
 
 ## Configuration
 
@@ -311,14 +311,14 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 | `AUTO_INGEST_REPO` | (none; compose sets `psf/requests@v2.32.3`) | ingest on startup if missing |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / (none) | LangSmith traces of every graph node and LLM call; otherwise JSON logs |
 
-Prompts are versioned files in [repomind/app/prompts](repomind/app/prompts) (`name.vN.md`); pin one
+Prompts are versioned files in [badebhai/app/prompts](badebhai/app/prompts) (`name.vN.md`); pin one
 with `PROMPT_VERSION_<NAME>=N`.
 
 ## Development
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 108 tests; DB tests use a separate `repomind_test` database
+uv run pytest                        # 108 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```
@@ -332,7 +332,7 @@ Recording a demo: see [docs/demo-script.md](docs/demo-script.md) (browser walkth
 [docs/demo.tape](docs/demo.tape) (terminal GIF with VHS).
 
 ```
-repomind/
+badebhai/
   app/          api, agent graph + nodes, prompts, memory, citations, MCP client, naive baseline
   mcp_servers/  code_search, git_history, docs (+ GitHub client)
   ingestion/    chunker, filters, secret redaction, indexer, webhook, sync
@@ -356,7 +356,7 @@ tests/          unit + integration
   server errors, evals checkpoint and `--resume`, and `docker compose restart ollama` clears it; a
   native Ollama install on Windows avoids the WSL2 layer.
 - The LLM judge in the eval is the same small local model, so correctness scores are a noisy signal;
-  `repomind eval --judge-model <larger model>` uses a stronger judge if you have one.
+  `badebhai eval --judge-model <larger model>` uses a stronger judge if you have one.
 - **No authentication.** `user_id` is supplied by the client, so anyone who knows a user id can read
   or delete that user's memories. Fine for a local demo, not for a shared deployment.
 - The verifier proves that cited evidence is real and unchanged; it does not prove that the claim

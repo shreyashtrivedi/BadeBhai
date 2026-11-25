@@ -1,7 +1,7 @@
 import itertools
 
-from repomind.ingestion.chunker import Chunker, expand_identifiers, split_identifier
-from repomind.ingestion.languages import classify, is_test_path
+from badebhai.ingestion.chunker import Chunker, expand_identifiers, split_identifier
+from badebhai.ingestion.languages import classify, is_test_path
 
 PY = (
     '''import os

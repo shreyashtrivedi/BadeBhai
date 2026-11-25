@@ -1,13 +1,13 @@
 import pytest
 
-from repomind.app.memory.policy import (
+from badebhai.app.memory.policy import (
     MemoryCandidate,
     looks_like_code,
     rejection_reason,
     worth_extracting,
 )
-from repomind.app.memory.store import decay_factor, retrieval_weight
-from repomind.config import Settings
+from badebhai.app.memory.store import decay_factor, retrieval_weight
+from badebhai.config import Settings
 
 S = Settings(_env_file=None, memory_importance_threshold=0.6)
 

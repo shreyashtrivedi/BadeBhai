@@ -7,9 +7,9 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from repomind.app.api import create_app
-from repomind.ingestion.indexer import Indexer
-from repomind.llm.fake import FakeLLM
+from badebhai.app.api import create_app
+from badebhai.ingestion.indexer import Indexer
+from badebhai.llm.fake import FakeLLM
 from tests.integration.helpers import evidence_ids, grade_all, plan, toolbox_factory
 
 pytestmark = pytest.mark.db
@@ -462,8 +462,8 @@ def test_related_but_incomplete_evidence_is_partial_not_insufficient(indexed):
 
 
 def test_plan_repair_enriches_generic_queries_and_adds_commit_search():
-    from repomind.app.agent.planning import repair_plan
-    from repomind.app.mcp_client import ToolSpec
+    from badebhai.app.agent.planning import repair_plan
+    from badebhai.app.mcp_client import ToolSpec
 
     tools = {
         n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})
@@ -490,7 +490,7 @@ def test_plan_repair_enriches_generic_queries_and_adds_commit_search():
 
 
 def test_near_duplicate_subquestions_merge_but_different_intents_stay_apart():
-    from repomind.app.agent.planning import PlannedCall, SubQuestionPlan, merge_duplicate_subquestions
+    from badebhai.app.agent.planning import PlannedCall, SubQuestionPlan, merge_duplicate_subquestions
 
     def sq(text, sources, *tools):
         calls = [PlannedCall(tool=t, args_json=json.dumps({"query": text})) for t in tools]
@@ -528,8 +528,8 @@ def test_near_duplicate_subquestions_merge_but_different_intents_stay_apart():
 
 
 def test_grade_schema_only_allows_the_graded_subquestion_ids():
-    from repomind.app.agent.planning import grade_schema
-    from repomind.llm.base import strict_json_schema
+    from badebhai.app.agent.planning import grade_schema
+    from badebhai.llm.base import strict_json_schema
 
     schema = grade_schema(["q1", "q3"])
     js = strict_json_schema(schema, keep_array_bounds=True)
@@ -544,8 +544,8 @@ def test_grade_schema_only_allows_the_graded_subquestion_ids():
 
 
 def test_first_round_also_searches_the_subquestion_verbatim():
-    from repomind.app.agent.planning import repair_plan
-    from repomind.app.mcp_client import ToolSpec
+    from badebhai.app.agent.planning import repair_plan
+    from badebhai.app.mcp_client import ToolSpec
 
     tools = {
         n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})
@@ -583,8 +583,8 @@ def test_first_round_also_searches_the_subquestion_verbatim():
 
 
 def test_plan_repair_ignores_date_windows_the_model_invented():
-    from repomind.app.agent.planning import repair_plan
-    from repomind.app.mcp_client import ToolSpec
+    from badebhai.app.agent.planning import repair_plan
+    from badebhai.app.mcp_client import ToolSpec
 
     tools = {
         n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})

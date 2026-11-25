@@ -6,11 +6,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from repomind.app.api import create_app
-from repomind.db.pool import get_pool
-from repomind.ingestion.indexer import Indexer
-from repomind.ingestion.webhook import sign
-from repomind.llm.fake import FakeLLM
+from badebhai.app.api import create_app
+from badebhai.db.pool import get_pool
+from badebhai.ingestion.indexer import Indexer
+from badebhai.ingestion.webhook import sign
+from badebhai.llm.fake import FakeLLM
 from tests.integration.helpers import STAGE3_NODES, evidence_ids, grade_all, plan, toolbox_factory
 
 pytestmark = pytest.mark.db
@@ -82,10 +82,10 @@ def test_agent_answers_from_code_commits_and_issues(indexed):
 
 def test_streaming_emits_steps_tools_tokens_and_final(indexed):
     llm = FakeLLM({"decompose": MIXED_PLAN, "grade": grade_all(), "synthesize": cite_one_of_each})
-    from repomind.app.agent.runner import AgentRunner
-    from repomind.app.schemas import AskRequest
-    from repomind.db import repos as repo_db
-    from repomind.embeddings import get_embedder
+    from badebhai.app.agent.runner import AgentRunner
+    from badebhai.app.schemas import AskRequest
+    from badebhai.db import repos as repo_db
+    from badebhai.embeddings import get_embedder
 
     pool = get_pool(indexed)
     runner = AgentRunner(indexed, llm, pool, get_embedder(indexed), toolbox_factory=toolbox_factory(indexed))
@@ -94,7 +94,7 @@ def test_streaming_emits_steps_tools_tokens_and_final(indexed):
     async def collect():
         return [e async for e in runner.stream(AskRequest(question="auth?", repo="tiny"), repo)]
 
-    from repomind import compat
+    from badebhai import compat
 
     events = compat.run(collect())
     kinds = [e["type"] for e in events]

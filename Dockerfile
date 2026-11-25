@@ -29,8 +29,8 @@ RUN if [ -n "$PRELOAD_MODEL" ]; then \
       HF_HUB_OFFLINE=0 python -c "from sentence_transformers import SentenceTransformer as S; S('$PRELOAD_MODEL')"; \
     fi
 
-COPY repomind ./repomind
+COPY badebhai ./badebhai
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
-CMD ["repomind", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]
+CMD ["badebhai", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-mcp"]

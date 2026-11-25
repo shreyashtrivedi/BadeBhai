@@ -3,10 +3,10 @@ import json
 import httpx
 import pytest
 
-from repomind.app.agent.planning import PlannedCall, default_calls, validate_calls
-from repomind.app.mcp_client import ToolSpec, _parse
-from repomind.ingestion.webhook import parse_push, sign, verify_signature
-from repomind.mcp_servers.github_client import GitHubClient, GitHubError, GitHubRateLimited
+from badebhai.app.agent.planning import PlannedCall, default_calls, validate_calls
+from badebhai.app.mcp_client import ToolSpec, _parse
+from badebhai.ingestion.webhook import parse_push, sign, verify_signature
+from badebhai.mcp_servers.github_client import GitHubClient, GitHubError, GitHubRateLimited
 
 
 # ---------------------------------------------------------------- webhook
@@ -127,7 +127,7 @@ def test_rate_limit_raises_clear_error():
 
 
 def test_server_errors_are_retried_then_cached(monkeypatch):
-    monkeypatch.setattr("repomind.mcp_servers.github_client.time.sleep", lambda s: None)
+    monkeypatch.setattr("badebhai.mcp_servers.github_client.time.sleep", lambda s: None)
     calls = {"n": 0}
 
     def handler(request):
@@ -164,5 +164,5 @@ def test_auth_header_and_user_agent_are_generic():
 
     _client(handler, token="tok").get("/x")
     assert seen["authorization"] == "Bearer tok"
-    assert seen["user-agent"] == "repomind-mcp"
+    assert seen["user-agent"] == "badebhai-mcp"
     assert json.loads("{}") == {}

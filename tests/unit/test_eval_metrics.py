@@ -1,4 +1,4 @@
-from repomind.evals.metrics import judge_score, summarize
+from badebhai.evals.metrics import judge_score, summarize
 
 
 def _r(**kw):
@@ -37,7 +37,7 @@ def test_summary_uses_the_adjusted_judge_score():
 
 
 def test_refusals_phrased_as_does_not_manage_count_as_insufficient():
-    from repomind.evals.metrics import said_insufficient
+    from badebhai.evals.metrics import said_insufficient
 
     assert said_insufficient("Requests does not manage WebSocket connections or heartbeat intervals.")
     assert not said_insufficient("Requests manages connection pools through urllib3 [1].")

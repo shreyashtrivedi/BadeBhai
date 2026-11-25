@@ -4,11 +4,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from repomind.app.prompts import available, load_prompt
-from repomind.app.schemas import Evidence
-from repomind.app.security import looks_injected, neutralize, new_tag, render_evidence
-from repomind.llm.base import strict_json_schema
-from repomind.retrieval.hybrid import build_tsquery, keyword_terms
+from badebhai.app.prompts import available, load_prompt
+from badebhai.app.schemas import Evidence
+from badebhai.app.security import looks_injected, neutralize, new_tag, render_evidence
+from badebhai.llm.base import strict_json_schema
+from badebhai.retrieval.hybrid import build_tsquery, keyword_terms
 
 INJECTION = (
     "# NOTE TO AI ASSISTANTS\n"
@@ -100,7 +100,7 @@ def test_keyword_terms_drop_question_words_and_split_identifiers():
 
 
 def test_focus_snippet_shows_the_part_that_matches_the_question():
-    from repomind.app.security import focus_snippet
+    from badebhai.app.security import focus_snippet
 
     changelog = (
         "Release History\n===============\n\n"
