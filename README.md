@@ -339,6 +339,13 @@ Earlier retrieval-only work:
   grouping runs of tiny definitions such as the 25 small exception classes into one chunk
   ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
   [after](badebhai/evals/reports/20261124-230610.md)).
+- **A reranker did not pay off here.** A local cross-encoder over the top 30 candidates
+  (`RERANKER=...`) was measured with the retrieval-only eval: `ms-marco-MiniLM-L-6-v2` lowered hit@1
+  from 71.4% to 68.6% and hit@3 from 91.4% to 88.6% while tripling retrieval time
+  ([baseline](badebhai/evals/reports/20261125-190345.md), [reranked](badebhai/evals/reports/20261125-190439.md));
+  it is trained on web passages, not code. Stronger rerankers (`mxbai-rerank-xsmall-v1`,
+  `bge-reranker-base`) took minutes per question on the laptop CPU, too slow to be useful. So it stays
+  off by default; the hook is there for machines where it is fast, and the eval says whether it helps.
 
 ## Sharing it with a team
 
