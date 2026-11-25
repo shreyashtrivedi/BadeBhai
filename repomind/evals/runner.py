@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from datetime import UTC, datetime
@@ -170,7 +171,12 @@ class EvalRunner:
         limit: int | None = None,
         ids: list[str] | None = None,
         retrieval_only: bool = False,
+        checkpoint_dir: Path | None = None,
+        resume: str | None = None,
     ) -> dict[str, Any]:
+        """Each finished (system, question) result is appended to `<run_id>.partial.jsonl` in
+        `checkpoint_dir`; `resume=<run_id>` reloads it and skips what is already done, so long local
+        runs survive interruptions."""
         golden = load_golden(golden_path)
         repo = repo_db.get_repo(self.pool, golden.repo)
         if repo is None:
@@ -183,12 +189,25 @@ class EvalRunner:
                 extra={"indexed": repo.last_indexed_commit, "golden": golden.commit},
             )
         questions = [q for q in golden.questions if not ids or q.id in ids][: limit or None]
-        run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        run_id = resume or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         user_id = f"eval-{run_id}"
         systems = ("retrieval",) if retrieval_only else systems
         results: dict[str, list[dict]] = {s: [] for s in systems}
+        done: set[tuple[str, str]] = set()
+        checkpoint = (checkpoint_dir / f"{run_id}.partial.jsonl") if checkpoint_dir else None
+        if checkpoint is not None:
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            if resume and checkpoint.exists():
+                for line in checkpoint.read_text(encoding="utf-8").splitlines():
+                    rec = json.loads(line)
+                    if rec["system"] in results and not rec.get("error"):  # failed ones are retried
+                        results[rec["system"]].append({k: v for k, v in rec.items() if k != "system"})
+                        done.add((rec["system"], rec["id"]))
+                log.info(f"resuming {run_id}: {len(done)} result(s) already done")
         for i, q in enumerate(questions, start=1):
             for system in systems:
+                if (system, q.id) in done:
+                    continue
                 base = {
                     "id": q.id,
                     "category": q.category,
@@ -205,6 +224,9 @@ class EvalRunner:
                     log.exception("eval question failed", extra={"id": q.id, "system": system})
                     r = {"error": f"{type(e).__name__}: {e}"[:300], "hits": {}}
                 results[system].append({**base, **r})
+                if checkpoint is not None:
+                    with checkpoint.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"system": system, **base, **r}, default=str) + "\n")
                 status = r.get("error") or " ".join(f"{k}={int(v)}" for k, v in r.get("hits", {}).items())
                 log.info(f"[{i}/{len(questions)}] {system:9s} {q.id}: {status}")
         return {

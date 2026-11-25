@@ -85,3 +85,38 @@ def test_eval_runner_compares_naive_and_agent(db_settings, tiny_repo, tmp_path):
     assert "| Retrieval hit@1 | 100.0% | 100.0% |" in md and "LLM-judge" in md
     raw, page = write(report, tmp_path / "reports")
     assert raw.exists() and page.exists() and (tmp_path / "reports" / "latest.md").exists()
+
+
+def test_eval_checkpoint_and_resume(db_settings, tiny_repo, tmp_path):
+    rep = Indexer(db_settings).ingest(str(tiny_repo), name="acme/tiny")
+    golden = tmp_path / "golden.yaml"
+    qs = [
+        {
+            "id": f"q{i}",
+            "category": "location",
+            "question": "Where is basic authentication handled?",
+            "expected_files": ["app/auth.py"],
+            "reference": "app/auth.py",
+        }
+        for i in range(3)
+    ]
+    golden.write_text(
+        yaml.safe_dump({"repo": "acme/tiny", "ref": "main", "commit": rep.commit, "questions": qs})
+    )
+    calls = {"n": 0}
+
+    def naive(system, messages, schema):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash")  # second question fails mid-run
+        return f"BasicAuth in app/auth.py [{evidence_ids(messages[-1]['content'])['code'][0]}]."
+
+    runner = EvalRunner(db_settings, llm=FakeLLM({"naive": naive}))
+    ck = tmp_path / "ck"
+    first = compat.run(runner.evaluate(golden, ("naive",), checkpoint_dir=ck))
+    assert first["summary"]["naive"]["errors"] == 1
+    run_id = first["run_id"]
+    assert len((ck / f"{run_id}.partial.jsonl").read_text().splitlines()) == 3
+    second = compat.run(runner.evaluate(golden, ("naive",), checkpoint_dir=ck, resume=run_id))
+    assert calls["n"] == 4  # only the failed question was re-run
+    assert second["summary"]["naive"]["errors"] == 0 and second["summary"]["naive"]["questions"] == 3

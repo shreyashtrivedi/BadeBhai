@@ -276,12 +276,13 @@ def eval_cmd(
     golden: str = typer.Option(None, help="golden YAML (default: psf/requests v2.32.3)"),
     mcp: str = typer.Option("inmemory", help="MCP transport for the agent: inmemory | http | stdio"),
     judge_model: str = typer.Option(None, help="model for the LLM judge (default: the main model)"),
+    resume: str = typer.Option(None, help="run id to resume (results are checkpointed as they finish)"),
 ) -> None:
     """Run the golden-question eval and write repomind/evals/reports/latest.md."""
     _init()
     from repomind import compat
     from repomind.evals.golden import DEFAULT_GOLDEN
-    from repomind.evals.report import markdown, write
+    from repomind.evals.report import REPORTS_DIR, markdown, write
     from repomind.evals.runner import EvalRunner
     from repomind.llm import get_llm
 
@@ -297,6 +298,8 @@ def eval_cmd(
             limit=limit,
             ids=[x.strip() for x in ids.split(",")] if ids else None,
             retrieval_only=retrieval_only,
+            checkpoint_dir=REPORTS_DIR / "raw",
+            resume=resume,
         )
     )
     raw, md = write(report)
