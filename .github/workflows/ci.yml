@@ -50,7 +50,7 @@ jobs:
           --health-cmd "pg_isready -U badebhai" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       DATABASE_URL: postgresql://badebhai:badebhai@localhost:5433/badebhai_ci
-      DATA_DIR: ${{ runner.temp }}/badebhai-data
+      DATA_DIR: /tmp/badebhai-data
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
