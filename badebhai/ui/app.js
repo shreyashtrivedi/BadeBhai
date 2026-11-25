@@ -580,7 +580,11 @@ function initDemo() {
   const src = safeUrl(state.setup.source_url) || "https://github.com/shreyashtrivedi/BadeBhai";
   const banner = $("#demo-banner");
   const model = state.setup.model ? ` Answers by <strong>${esc(state.setup.model)}</strong>.` : "";
-  banner.innerHTML = `<strong>Live demo.</strong> Ask anything about the repositories in the Repo menu.${model}
+  const live = safeUrl(state.setup.live_url);
+  banner.innerHTML = state.setup.tour
+    ? `<strong>Recorded tour.</strong> Real answers recorded from a running BadeBhai${model ? " (" + model.replace(/^ Answers by /, "").replace(/\.$/, "") + ")" : ""}: pick an example question, then click citations, open the trace or the codebase map.
+       ${live ? `<a href="${esc(live)}" target="_blank" rel="noopener noreferrer">Ask your own question on the live demo</a> · ` : ""}<a href="${esc(src)}" target="_blank" rel="noopener noreferrer">Source &amp; run your own</a>`
+    : `<strong>Live demo.</strong> Ask anything about the repositories in the Repo menu.${model}
     For any other repo, private code, or a fully local model, <a href="${esc(src)}" target="_blank" rel="noopener noreferrer">run your own copy</a> (free).`;
   banner.hidden = false;
   const add = $("#add-repo");
