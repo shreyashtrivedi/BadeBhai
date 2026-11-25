@@ -16,7 +16,7 @@ ROWS = [
     ("recall_any", "Expected source found anywhere in gathered evidence", "pct"),
     ("cited_expected", "Answer cites an expected file/commit/issue", "pct"),
     ("citation_validity", "Citation validity rate", "pct"),
-    ("judge_correctness", "LLM-judge answer correctness (0-1)", "num"),
+    ("judge_correctness", "LLM-judge answer correctness (0-1; abstaining when answerable = 0)", "num"),
     ("insufficient_accuracy", "Says 'insufficient evidence' on unanswerable questions", "pct"),
     ("over_abstention", "Abstains entirely on answerable questions", "pct"),
     ("latency_p50_ms", "Latency p50", "ms"),

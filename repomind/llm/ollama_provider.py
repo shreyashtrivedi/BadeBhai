@@ -137,7 +137,8 @@ class OllamaProvider(LLMProvider):
             "keep_alive": self.s.ollama_keep_alive,
             "options": {
                 "num_ctx": self.s.ollama_num_ctx,
-                "temperature": self.s.ollama_temperature,
+                # structured calls (plans, grades, judgements) decode greedily: same input, same verdict
+                "temperature": 0.0 if fmt is not None else self.s.ollama_temperature,
                 "num_predict": min(max_tokens, self.s.ollama_max_output_tokens),
             },
         }
@@ -223,7 +224,7 @@ class OllamaProvider(LLMProvider):
         fast: bool = True,
         max_tokens: int = 16000,
     ) -> T:
-        js = strict_json_schema(schema)
+        js = strict_json_schema(schema, keep_array_bounds=True)
         system = (
             f"{system}\n\nRespond with one JSON object that matches this JSON schema exactly. "
             f"No prose, no markdown fences.\nJSON schema: {json.dumps(js, separators=(',', ':'))}"
@@ -272,6 +273,19 @@ class OllamaProvider(LLMProvider):
                             )
                             return
                         raise self._error(model, r.status_code, text)
+                    if r.status_code >= 500:  # e.g. the runner crashed (CUDA error) and reloads: nothing
+                        # was streamed yet, so retry through the non-streaming path (which retries once)
+                        log.warning(
+                            "ollama server error before streaming, retrying", extra={"status": r.status_code}
+                        )
+                        yield await self.complete(
+                            purpose=purpose,
+                            system=system,
+                            messages=messages,
+                            fast=fast,
+                            max_tokens=max_tokens,
+                        )
+                        return
                     if r.status_code >= 400:
                         raise self._error(model, r.status_code, (await r.aread()).decode(errors="replace"))
                     async for line in r.aiter_lines():

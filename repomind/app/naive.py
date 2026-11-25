@@ -61,7 +61,7 @@ async def answer_naive(
     item_chars = per_item_chars(settings.evidence_char_budget, len(evidence), 600, 2400)
     prompt = load_prompt("naive")
     system = prompt.render(repo=repo.name, tag=tag)
-    user = f"Question: {question}\n\nEvidence ({len(evidence)} items):\n\n{render_evidence_list(evidence, tag, item_chars)}"
+    user = f"Question: {question}\n\nEvidence ({len(evidence)} items):\n\n{render_evidence_list(evidence, tag, item_chars, focus=question)}"
     t = time.perf_counter()
     raw = await llm.complete(purpose="naive", system=system, messages=[{"role": "user", "content": user}])
     trace.append(

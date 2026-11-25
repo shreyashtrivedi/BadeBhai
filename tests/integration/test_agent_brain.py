@@ -282,7 +282,8 @@ def test_weak_evidence_retries_then_reports_insufficient(indexed):
     assert body["answer"].startswith("Insufficient evidence")
     assert body["citations"] == []
     assert not llm.calls_for("synthesize")  # nothing passed grading: no chance to hallucinate
-    assert len({json.dumps(t["args"], sort_keys=True) for t in body["tool_calls"]}) == 3  # no repeated call
+    args = [json.dumps(t["args"], sort_keys=True) for t in body["tool_calls"]]
+    assert len(args) == len(set(args)) == 4  # verbatim baseline + planned + 2 rewrites, none repeated
 
 
 def test_rewrite_follows_leads_and_recovers(indexed, tiny_repo, git):
@@ -486,3 +487,135 @@ def test_plan_repair_enriches_generic_queries_and_adds_commit_search():
         3,
     )
     assert [c["tool"] for c in why] == ["search_code", "search_commits"]
+
+
+def test_near_duplicate_subquestions_merge_but_different_intents_stay_apart():
+    from repomind.app.agent.planning import PlannedCall, SubQuestionPlan, merge_duplicate_subquestions
+
+    def sq(text, sources, *tools):
+        calls = [PlannedCall(tool=t, args_json=json.dumps({"query": text})) for t in tools]
+        return SubQuestionPlan(text=text, sources=sources, query=text, calls=calls)
+
+    restated = merge_duplicate_subquestions(
+        [
+            sq(
+                "Where in the code is the Authorization header stripped during a redirect?",
+                ["code"],
+                "search_code",
+            ),
+            sq(
+                "How does requests handle the Authorization header during redirects?", ["code"], "search_code"
+            ),
+            sq(
+                "What happens when stripping the Authorization header on redirects?",
+                ["code", "commits"],
+                "search_commits",
+            ),
+        ]
+    )
+    assert len(restated) == 1
+    assert restated[0].sources == ["code", "commits"]
+    assert [c.tool for c in restated[0].calls] == ["search_code", "search_code", "search_commits"]
+
+    distinct = merge_duplicate_subquestions(
+        [
+            sq("Why was the retry logic added?", ["commits"], "search_commits"),
+            sq("Is the retry logic related to any open issues?", ["issues"], "search_issues"),
+            sq("Which data structure stores HTTP headers case-insensitively?", ["code"], "search_code"),
+        ]
+    )
+    assert len(distinct) == 3
+
+
+def test_grade_schema_only_allows_the_graded_subquestion_ids():
+    from repomind.app.agent.planning import grade_schema
+    from repomind.llm.base import strict_json_schema
+
+    schema = grade_schema(["q1", "q3"])
+    js = strict_json_schema(schema, keep_array_bounds=True)
+    grades = js["properties"]["grades"]
+    assert grades["minItems"] == grades["maxItems"] == 2
+    assert grades["items"]["properties"]["sub_question_id"]["enum"] == ["q1", "q3"]
+    assert "minItems" not in json.dumps(strict_json_schema(schema))  # stripped for other providers
+    one = {"sub_question_id": "q1", "scores": [1.0], "sufficient": True, "missing": ""}
+    assert len(schema.model_validate({"grades": [one]}).grades) == 1  # a miscount is not an error
+    with pytest.raises(ValueError):
+        schema.model_validate({"grades": [{**one, "sub_question_id": "q2"}]})
+
+
+def test_first_round_also_searches_the_subquestion_verbatim():
+    from repomind.app.agent.planning import repair_plan
+    from repomind.app.mcp_client import ToolSpec
+
+    tools = {
+        n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})
+        for n in ("search_code", "search_docs", "search_commits", "search_issues")
+    }
+    sub = "Which data structure stores HTTP headers case-insensitively?"
+    calls = repair_plan(
+        [  # the model paraphrased away the decisive word
+            {"tool": "search_code", "args": {"query": "how are HTTP headers stored in requests"}},
+            {"tool": "search_docs", "args": {"query": "how are HTTP headers stored in requests"}},
+            {"tool": "search_code", "args": {"query": "headers dict"}},
+        ],
+        sub,
+        ["code", "docs"],
+        "headers",
+        tools,
+        4,
+        context=sub,
+        baseline=True,
+    )
+    assert calls[:2] == [
+        {"tool": "search_code", "args": {"query": sub}},
+        {"tool": "search_docs", "args": {"query": sub}},
+    ]
+    assert len(calls) == 4 and calls[2]["args"]["query"] == "how are HTTP headers stored in requests"
+    # an existing verbatim call is not duplicated, and later rounds do not add it
+    again = repair_plan(
+        [{"tool": "search_code", "args": {"query": sub.lower()}}], sub, ["code"], sub, tools, 4, baseline=True
+    )
+    assert again == [{"tool": "search_code", "args": {"query": sub.lower()}}]
+    later = repair_plan(
+        [{"tool": "search_code", "args": {"query": "CaseInsensitiveDict"}}], sub, ["code"], "", tools, 4
+    )
+    assert later == [{"tool": "search_code", "args": {"query": "CaseInsensitiveDict"}}]
+
+
+def test_plan_repair_ignores_date_windows_the_model_invented():
+    from repomind.app.agent.planning import repair_plan
+    from repomind.app.mcp_client import ToolSpec
+
+    tools = {
+        n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})
+        for n in ("search_code", "search_docs", "search_commits", "search_issues", "recent_changes")
+    }
+    question = "Why was Proxy-Authorization handling changed in 2.31.0?"
+    # the model wrote its own date range into the sub-question and planned a time-window call
+    calls = repair_plan(
+        [
+            {"tool": "recent_changes", "args": {"since": "2026-01-01", "until": "2026-11-25"}},
+            {"tool": "search_commits", "args": {"query": "Proxy-Authorization", "since": "2026-01-01"}},
+        ],
+        "What changed between January 1, 2026 and November 25, 2026 related to Proxy-Authorization?",
+        ["commits"],
+        "Proxy-Authorization",
+        tools,
+        3,
+        context=question,
+    )
+    tools_used = [c["tool"] for c in calls]
+    assert "recent_changes" not in tools_used
+    assert all("since" not in c["args"] for c in calls)
+    assert "search_docs" in tools_used  # a version number: the changelog is in the docs
+    # a real time window in the user's question is kept
+    dated = repair_plan(
+        [{"tool": "recent_changes", "args": {"since": "2024-05-01", "until": "2024-05-31"}}],
+        "What changed in May 2024?",
+        ["commits"],
+        "changes",
+        tools,
+        3,
+        context="What changed in src/requests during May 2024?",
+    )
+    assert dated[0] == {"tool": "recent_changes", "args": {"since": "2024-05-01", "until": "2024-05-31"}}

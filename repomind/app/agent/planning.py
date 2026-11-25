@@ -6,7 +6,7 @@ import json
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from repomind.app.mcp_client import ToolSpec
 from repomind.retrieval.hybrid import keyword_terms
@@ -94,6 +94,7 @@ _TIME_Q = re.compile(
     r"releases?|sprints?)\b|\b(since|between|ago|yesterday|today|recently|lately)\b|"
     r"\b(january|february|march|april|june|july|august|september|october|november|december)\b|\bmay\s+\d"
 )
+_VERSION_Q = re.compile(r"(?i)\bv?\d+\.\d+(?:\.\d+)?\b")  # "2.31.0": the changelog (docs) says what changed
 
 
 def topic_terms(text: str) -> list[str]:
@@ -109,6 +110,34 @@ def enrich_query(query: str, sub_question: str) -> str:
     return " ".join([query.strip(), *missing[:4]]).strip()
 
 
+def _stems(text: str) -> set[str]:
+    return {t[:5] for t in topic_terms(text)}  # crude stemming: "stripped"/"stripping", "redirect(s)"
+
+
+def merge_duplicate_subquestions(
+    plans: list[SubQuestionPlan], threshold: float = 0.6
+) -> list[SubQuestionPlan]:
+    """Small models often restate one narrow question as several near-identical sub-questions, which
+    multiplies grading work and the chance of a grader false negative. A sub-question is merged into
+    an earlier one when their topic words mostly overlap and one's sources contain the other's, so
+    "why was X added" (commits) and "is X related to open issues" (issues) stay separate."""
+    kept: list[SubQuestionPlan] = []
+    for p in plans:
+        stems, sources = _stems(p.text), set(p.sources)
+        for k in kept:
+            k_stems, k_sources = _stems(k.text), set(k.sources)
+            union = stems | k_stems
+            similar = bool(union) and len(stems & k_stems) / len(union) >= threshold
+            if similar and (sources <= k_sources or k_sources <= sources):
+                k.sources = list(dict.fromkeys([*k.sources, *p.sources]))
+                seen = {(c.tool, c.args_json) for c in k.calls}
+                k.calls = [*k.calls, *(c for c in p.calls if (c.tool, c.args_json) not in seen)]
+                break
+        else:
+            kept.append(p.model_copy(deep=True))
+    return kept
+
+
 def repair_plan(
     calls: list[dict],
     sub_question: str,
@@ -117,12 +146,17 @@ def repair_plan(
     tools: dict[str, ToolSpec],
     max_calls: int,
     context: str = "",
+    baseline: bool = False,
 ) -> list[dict]:
     """Enrich generic search queries, drop invented date windows, then make sure each requested
-    source (and commit history for why/when questions) has a search call, within the call budget.
-    `context` is the user's full question (sub-questions like "is it related..." lose the topic)."""
+    source (commit history for why/when questions, the changelog for version questions) has a search
+    call, within the call budget. `context` is the user's full question (sub-questions like "is it
+    related..." lose the topic). Time windows must come from the user's words: a small model sometimes
+    writes its own date range into the sub-question, which would otherwise license the invented window.
+    `baseline` (first round) also searches code/docs with the sub-question verbatim: small models
+    paraphrase away the decisive words ("case-insensitively"), which naive RAG keeps."""
     topic_source = f"{sub_question} {context}".strip()
-    has_time = bool(_TIME_Q.search(topic_source))
+    has_time = bool(_TIME_Q.search(context or sub_question))
     fixed = []
     for c in calls:
         args = dict(c["args"])
@@ -137,25 +171,49 @@ def repair_plan(
     wanted = list(dict.fromkeys(sources or ["code"]))
     if _HISTORY_Q.search(sub_question) and "commits" not in wanted:
         wanted.append("commits")
+    if (
+        _VERSION_Q.search(context or sub_question)
+        and _HISTORY_Q.search(topic_source)
+        and "docs" not in wanted
+    ):
+        wanted.append("docs")
     present = {c["tool"] for c in fixed}
+    first: list[dict] = []
+    if baseline:  # the sub-question's own words, as naive RAG would search: the agent never retrieves less
+        for src in ("code", "docs"):
+            tool = DEFAULT_TOOL[src]
+            if (
+                src in wanted
+                and tool in tools
+                and not any(
+                    c["tool"] == tool and _norm(c["args"].get("query")) == _norm(sub_question) for c in fixed
+                )
+            ):
+                first.append({"tool": tool, "args": {"query": sub_question}})
+    covered = present | {c["tool"] for c in first}
     base_query = enrich_query(query or sub_question, topic_source)
+    last: list[dict] = []
     for src in wanted:
         tool = DEFAULT_TOOL.get(src)
         if (
             tool
             and tool in tools
-            and tool not in present
+            and tool not in covered
             and not (src == "commits" and present & {"blame", "file_history", "get_commit"})
         ):
-            if len(fixed) >= max_calls:
-                # make room: a requested source beats a second call to an already-covered tool
-                dupes = [i for i, c in enumerate(fixed) if [x["tool"] for x in fixed].count(c["tool"]) > 1]
-                if not dupes:
-                    break
-                fixed.pop(dupes[-1])
-            fixed.append({"tool": tool, "args": {"query": base_query}})
-            present.add(tool)
-    return fixed[:max_calls]
+            last.append({"tool": tool, "args": {"query": base_query}})
+            covered.add(tool)
+    # Over budget: drop the model's calls, second calls to an already-covered tool first.
+    model = list(fixed)
+    while len(first) + len(model) + len(last) > max_calls and model:
+        names = [c["tool"] for c in (*first, *model, *last)]
+        dupes = [i for i, c in enumerate(model) if names.count(c["tool"]) > 1]
+        model.pop(dupes[-1] if dupes else -1)
+    return [*first, *model, *last][:max_calls]
+
+
+def _norm(text: object) -> str:
+    return " ".join(re.findall(r"\w+", str(text or "").lower()))
 
 
 class SubQuestionGrade(BaseModel):
@@ -172,6 +230,19 @@ class SubQuestionGrade(BaseModel):
 
 class GradeOutput(BaseModel):
     grades: list[SubQuestionGrade]
+
+
+def grade_schema(ids: list[str]) -> type[GradeOutput]:
+    """GradeOutput constrained to the given sub-question ids, one entry each. Small models otherwise
+    invent grades for sub-questions that do not exist, and every extra token is slow. The count is a
+    schema hint (grammar-enforced by Ollama), not a validation rule, so a miscount never costs a retry."""
+    grade = create_model(
+        "SubQuestionGrade", __base__=SubQuestionGrade, sub_question_id=(Literal[tuple(ids)], ...)
+    )
+    bounds = {"minItems": len(ids), "maxItems": len(ids)}
+    return create_model(
+        "GradeOutput", __base__=GradeOutput, grades=(list[grade], Field(json_schema_extra=bounds))
+    )
 
 
 class Replan(BaseModel):

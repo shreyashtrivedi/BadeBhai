@@ -53,6 +53,14 @@ def fully_abstained(answer: str) -> bool:
     return (answer or "").lstrip().lower().startswith("insufficient evidence")
 
 
+def judge_score(r: dict) -> float:
+    """The judge's score, except that abstaining on an answerable question counts as 0: a small
+    local judge sometimes rates "insufficient evidence" as correct because it is not wrong."""
+    if r.get("answerable") and r.get("fully_abstained"):
+        return 0.0
+    return r["judge_score"]
+
+
 def percentile(values: list[float], p: float) -> float | None:
     if not values:
         return None
@@ -81,7 +89,7 @@ def summarize(results: list[dict]) -> dict[str, Any]:
             round(sum(r["citations_valid"] for r in cites) / total, 4) if total else None
         )
         out["cited_expected"] = mean([float(r["cited_hit"]) for r in answerable])
-        judged = [r["judge_score"] for r in results if r.get("judge_score") is not None]
+        judged = [judge_score(r) for r in results if r.get("judge_score") is not None]
         out["judge_correctness"] = mean(judged)
         out["insufficient_accuracy"] = mean([float(r["said_insufficient"]) for r in unanswerable])
         out["over_abstention"] = mean([float(r["fully_abstained"]) for r in answerable])
@@ -96,6 +104,6 @@ def summarize(results: list[dict]) -> dict[str, Any]:
         by_cat: dict[str, list[float]] = {}
         for r in results:
             if r.get("judge_score") is not None:
-                by_cat.setdefault(r["category"], []).append(r["judge_score"])
+                by_cat.setdefault(r["category"], []).append(judge_score(r))
         out["judge_by_category"] = {c: mean(v) for c, v in sorted(by_cat.items())}
     return out

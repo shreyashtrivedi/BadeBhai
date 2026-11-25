@@ -93,6 +93,20 @@ async def test_stream_yields_text_and_filters_split_think_tags():
     assert usage.summary()["output_tokens"] == 5
 
 
+async def test_stream_retries_when_the_runner_crashes_before_any_output():
+    streamed = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        streamed.append(body["stream"])
+        if body["stream"]:  # the model runner crashed (seen in practice as a CUDA error) and reloads
+            return httpx.Response(500, json={"error": "CUDA error: unknown error"})
+        return chat_reply("Recovered answer [1].")
+
+    chunks = [c async for c in provider(handler).stream(purpose="synthesize", system="s", messages=[])]
+    assert "".join(chunks) == "Recovered answer [1]." and streamed == [True, False]
+
+
 async def test_missing_model_and_unreachable_server_give_actionable_errors():
     def missing(request):
         return httpx.Response(

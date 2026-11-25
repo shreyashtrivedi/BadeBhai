@@ -97,3 +97,24 @@ def test_keyword_terms_drop_question_words_and_split_identifiers():
     assert {"authentication", "httpdigestauth", "digest", "auth"} <= set(terms)
     assert build_tsquery("where is it?") is None
     assert "authentication:*" in build_tsquery("authentication")
+
+
+def test_focus_snippet_shows_the_part_that_matches_the_question():
+    from repomind.app.security import focus_snippet
+
+    changelog = (
+        "Release History\n===============\n\n"
+        + "".join(
+            f"2.32.{n} (2024-05-2{n})\n-------------------\n- Fixed an unrelated bug number {n}.\n\n"
+            for n in (3, 2, 1)
+        )
+        + "2.32.0 (2024-05-20)\n-------------------\n**Security**\n"
+        "- Fixed an issue where verify=False on the first request leaked to later requests.\n"
+    )
+    out = focus_snippet(changelog, "What security issue was fixed in 2.32.0?", 160)
+    assert "2.32.0 (2024-05-20)" in out and "**Security**" in out and out.startswith("…\n")
+    assert len(out) <= 160 + len("…\n") + len("\n…[truncated]")
+    # short content is untouched; nothing matching keeps the head
+    assert focus_snippet("tiny", "anything", 100) == "tiny"
+    head = focus_snippet("alpha\n" * 50, "zzz unrelated", 30)
+    assert head.startswith("alpha") and head.endswith("…[truncated]")

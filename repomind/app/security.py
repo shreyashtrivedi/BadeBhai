@@ -45,8 +45,52 @@ def neutralize(text: str, tag: str) -> str:
     return re.sub(rf"<(/?)\s*{re.escape(tag)}", lambda m: f"&lt;{m.group(1)}{tag}", text, flags=re.IGNORECASE)
 
 
-def render_evidence(n: int, ev: Evidence, tag: str, max_chars: int = 2400) -> str:
-    content = ev.content if len(ev.content) <= max_chars else ev.content[:max_chars] + "\n…[truncated]"
+_VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
+_FOCUS_STOP = {
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "which", "what", "when", "where",
+    "why", "how", "who", "does", "did", "has", "have", "from", "into", "its", "any", "there", "requests",
+}  # fmt: skip
+
+
+def _focus_stems(text: str) -> set[str]:
+    return {w[:5] for w in re.findall(r"[a-z0-9_]+", text.lower()) if len(w) >= 3 and w not in _FOCUS_STOP}
+
+
+def focus_snippet(content: str, query: str, max_chars: int) -> str:
+    """Shorten `content` to the `max_chars` window of whole lines that mentions the query most, instead
+    of its first `max_chars`: a 50-line changelog chunk cut from the top hides the release asked about.
+    Version strings count triple. With nothing matching, the head is kept as before."""
+    if len(content) <= max_chars:
+        return content
+    terms, versions = _focus_stems(query), set(_VERSION.findall(query))
+    lines = content.splitlines(keepends=True)
+    scores = [len(terms & _focus_stems(ln)) + 3 * sum(v in ln for v in versions) for ln in lines]
+    best, start = 0, 0
+    for s in range(len(lines)):
+        total, size = 0, 0
+        for i in range(s, len(lines)):
+            size += len(lines[i])
+            if size > max_chars:
+                break
+            total += scores[i]
+        if total > best:
+            best, start = total, s
+    out, size = [], 0
+    for ln in lines[start:]:
+        if size + len(ln) > max_chars:
+            break
+        out.append(ln)
+        size += len(ln)
+    text = "".join(out) if out else content[:max_chars]
+    end = start + len(out)
+    return ("…\n" if start else "") + text.rstrip("\n") + ("\n…[truncated]" if end < len(lines) else "")
+
+
+def render_evidence(n: int, ev: Evidence, tag: str, max_chars: int = 2400, focus: str | None = None) -> str:
+    if focus:
+        content = focus_snippet(ev.content, focus, max_chars)
+    else:
+        content = ev.content if len(ev.content) <= max_chars else ev.content[:max_chars] + "\n…[truncated]"
     attrs = {
         "id": str(n),
         "type": ev.type,
@@ -66,5 +110,7 @@ def per_item_chars(budget: int, n_items: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, budget // max(1, n_items)))
 
 
-def render_evidence_list(items: list[Evidence], tag: str, max_chars: int = 2400) -> str:
-    return "\n\n".join(render_evidence(i + 1, ev, tag, max_chars) for i, ev in enumerate(items))
+def render_evidence_list(
+    items: list[Evidence], tag: str, max_chars: int = 2400, focus: str | None = None
+) -> str:
+    return "\n\n".join(render_evidence(i + 1, ev, tag, max_chars, focus) for i, ev in enumerate(items))

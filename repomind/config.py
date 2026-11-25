@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_PROFILE = {
     "max_subquestions": 3,
     "evidence_per_call": 4,
-    "max_calls_per_subquestion": 3,
+    "max_calls_per_subquestion": 4,  # tool calls cost no LLM time; grading stays capped per round
     "max_evidence_for_synthesis": 10,
     "request_timeout_s": 1200.0,
     "max_retries": 1,

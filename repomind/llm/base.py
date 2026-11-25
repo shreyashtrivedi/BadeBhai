@@ -148,8 +148,10 @@ _DROP_KEYS = {
 }
 
 
-def strict_json_schema(model: type[BaseModel]) -> dict:
-    """Pydantic schema -> structured-output schema: refs inlined, closed objects, all fields required."""
+def strict_json_schema(model: type[BaseModel], keep_array_bounds: bool = False) -> dict:
+    """Pydantic schema -> structured-output schema: refs inlined, closed objects, all fields required.
+    `keep_array_bounds` keeps minItems/maxItems for engines that enforce them (Ollama's grammar)."""
+    drop = _DROP_KEYS - {"minItems", "maxItems"} if keep_array_bounds else _DROP_KEYS
     schema = model.model_json_schema()
     defs = schema.pop("$defs", {})
 
@@ -162,7 +164,7 @@ def strict_json_schema(model: type[BaseModel]) -> dict:
             return walk(copy.deepcopy(defs[node["$ref"].split("/")[-1]]))
         out: dict[str, Any] = {}
         for key, val in node.items():
-            if key in _DROP_KEYS:
+            if key in drop:
                 continue
             if key == "properties":
                 out[key] = {name: walk(sub) for name, sub in val.items()}

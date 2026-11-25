@@ -13,9 +13,10 @@ from langgraph.config import get_stream_writer
 
 from repomind.app.agent.planning import (
     DecomposeOutput,
-    GradeOutput,
     RewriteOutput,
     default_calls,
+    grade_schema,
+    merge_duplicate_subquestions,
     repair_plan,
     validate_calls,
 )
@@ -85,7 +86,7 @@ async def decompose(state: AgentState, config) -> dict:
             schema=DecomposeOutput,
             fast=True,
         )
-        plans = plan.sub_questions[: s.max_subquestions]
+        plans = merge_duplicate_subquestions(plan.sub_questions)[: s.max_subquestions]
     except LLMUnavailable:
         raise
     except LLMError as e:
@@ -104,6 +105,7 @@ async def decompose(state: AgentState, config) -> dict:
             tools,
             s.max_calls_per_subquestion,
             context=state["question"],
+            baseline=True,
         )
         subs.append(SubQuestion(id=f"q{i}", text=p.text, sources=list(p.sources), query=p.query, calls=calls))
     if not subs:
@@ -276,7 +278,7 @@ async def synthesize(state: AgentState, config) -> dict:
             "Sub-questions investigated:\n" + "\n".join(sq_lines),
             ("Notes:\n" + "\n".join(f"- {w}" for w in warnings)) if warnings else "",
             f"Evidence ({len(items)} items):\n\n"
-            + (render_evidence_list(items, tag, item_chars) if items else "(none)"),
+            + (render_evidence_list(items, tag, item_chars, focus=state["question"]) if items else "(none)"),
         ]
         if x
     )
@@ -390,9 +392,17 @@ async def grade_evidence(state: AgentState, config) -> dict:
     # The grader only needs enough of each item to judge relevance: half the prompt budget.
     item_chars = per_item_chars(s.evidence_char_budget // 2, n_to_grade, 250, 900)
     blocks = []
-    for sq in to_grade:
+    # Sub-questions with nothing new are left out: an empty "(none)" block made small models answer
+    # "no items provided" for every sub-question. Their verdict falls back to earlier strong items.
+    for sq in (x for x in to_grade if batches[x.id]):
         items = [
-            render_evidence(i, Evidence(**evidence[key]), tag, max_chars=item_chars)
+            render_evidence(
+                i,
+                Evidence(**evidence[key]),
+                tag,
+                max_chars=item_chars,
+                focus=f"{sq.text} {state['question']}",
+            )
             for i, key in enumerate(batches[sq.id], start=1)
         ]
         graded_before = [
@@ -406,24 +416,23 @@ async def grade_evidence(state: AgentState, config) -> dict:
             else ""
         )
         blocks.append(
-            f"## Sub-question {sq.id}: {sq.text}{prior}\nNew items ({len(items)}):\n"
-            + ("\n\n".join(items) if items else "(none)")
+            f"## Sub-question {sq.id}: {sq.text}{prior}\nNew items ({len(items)}):\n" + "\n\n".join(items)
         )
 
     verdicts: dict[str, tuple[bool, str]] = {}
-    if to_grade:
+    if blocks:
         prompt = load_prompt("grade")
         try:
             out = await d.llm.complete_json(
                 purpose="grade",
                 system=prompt.render(repo=d.repo.name, tag=tag),
                 messages=[{"role": "user", "content": "\n\n".join(blocks)}],
-                schema=GradeOutput,
+                schema=grade_schema([sq.id for sq in to_grade if batches[sq.id]]),
                 fast=True,
             )
             for g in out.grades:
                 keys = batches.get(g.sub_question_id)
-                if keys is None:
+                if not keys:
                     continue
                 for i, key in enumerate(keys):  # a missing score counts as irrelevant
                     score = max(0.0, min(1.0, float(g.scores[i]))) if i < len(g.scores) else 0.0
@@ -436,6 +445,9 @@ async def grade_evidence(state: AgentState, config) -> dict:
             for sq_id, keys in batches.items():
                 for key in keys:
                     evidence[key].setdefault("relevance_by_sq", {})[sq_id] = s.grade_threshold
+    for sq in to_grade:
+        if not batches[sq.id]:  # nothing new since it was judged not sufficient: that verdict stands
+            verdicts[sq.id] = (False, sq.note or "no new evidence found")
 
     for ev in evidence.values():
         if ev.get("relevance_by_sq"):
