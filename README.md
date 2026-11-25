@@ -44,10 +44,34 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NV
 ```
 
 Open **http://localhost:8000**. First start downloads the local model (`qwen3:4b-instruct`, 2.5 GB)
-and clones and indexes the demo repo (`psf/requests` pinned at `v2.32.3`, about a minute). To index
-another repo, set `AUTO_INGEST_REPO=owner/name` or `POST /repos {"source": "owner/name"}`.
-Optionally copy `.env.example` to `.env` and add a free `GITHUB_TOKEN` (raises GitHub's limit from
-60 to 5,000 requests/hour).
+and clones and indexes the demo repo (`psf/requests` pinned at `v2.32.3`, about a minute).
+
+### Ask about your own (or anyone's) codebase
+
+Click **+ Add repo** in the web page, paste a GitHub address and press **Add**. That's it: BadeBhai
+downloads the code, shows its progress while it reads the files, and selects the repo when it's ready.
+A small repo takes seconds; a big one a few minutes.
+
+Any of these work: `pallets/flask`, `https://github.com/pallets/flask`, a link copied from the browser
+(`.../tree/3.0.0/src`), or `pallets/flask@3.0.0` for a specific branch, tag or commit. Other git hosts
+work with their full URL. The same window lists your repos with a **Check for updates** button that
+fetches new commits and re-reads only the files that changed.
+
+**Do I need a GitHub token?** Not for public repositories. You need one (free, about 2 minutes) to:
+* add a **private** repository, or
+* search issues and pull requests a lot: without a token GitHub allows 60 requests an hour, with one 5,000.
+
+If a repo can't be found or downloaded, the page says whether a token would help and walks through
+creating one. In short: create a fine-grained token at
+[github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
+(for private repos give it read-only *Contents*, *Issues* and *Pull requests*), put
+`GITHUB_TOKEN=github_pat_...` in a `.env` file next to `docker-compose.yml` (copy `.env.example`), and
+restart with the same `docker compose ... up -d` command. The token is only used to read from GitHub
+(it is never stored in the database or sent to the browser), and git receives it as a header scoped to
+github.com, so it is never written into the clone.
+
+From a terminal the same works with `uv run badebhai ingest owner/name`, which also accepts a folder
+on your computer (the web page doesn't, so that people using the page can't read the server's disk).
 
 **Local (Python 3.11+):**
 
@@ -145,9 +169,9 @@ flowchart LR
 
 ## Using it
 
-**Web UI** (`/`): ask questions, watch the agent's steps stream in (sub-questions, MCP tool calls,
-grading, verification), click `[n]` chips to open the cited code, commit or issue, and see or delete
-what BadeBhai remembers about you.
+**Web UI** (`/`): add repositories, ask questions, watch the agent's steps stream in (sub-questions,
+MCP tool calls, grading, verification), click `[n]` chips to open the cited code, commit or issue,
+and see or delete what BadeBhai remembers about you.
 
 **API**
 
@@ -156,7 +180,8 @@ what BadeBhai remembers about you.
 | `POST /ask` | `{"question", "repo", "mode": "agent"\|"naive", "user_id", "thread_id"}` returns the answer, citations, verification report, trace, sub-questions, tool calls, usage |
 | `POST /ask/stream` | the same as server-sent events: `start`, `step`, `tool`, `token`, `final`, `error` |
 | `GET /memories?user_id=&repo=` · `DELETE /memories/{id}?user_id=` · `DELETE /memories?user_id=` | user control over long-term memory |
-| `POST /repos` · `GET /repos` · `POST /repos/{owner}/{name}/sync` · `GET /jobs/{id}` | ingest, list, sync |
+| `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update |
+| `GET /jobs/{id}` · `GET /jobs?status=running` · `GET /setup` | progress of adds and updates (`stage`, `done`/`total` files); whether a GitHub token is configured |
 | `POST /webhooks/github` | GitHub push webhook (HMAC-SHA256 verified) |
 | `GET /search?repo=&q=&kind=code\|doc\|all` · `GET /tools` | debugging: raw hybrid search, discovered MCP tools |
 
@@ -300,7 +325,9 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | compose sets `http://ollama:11434` |
 | `OLLAMA_NUM_CTX` | `8192` | context window; evidence budgets scale with it (raise it if your GPU has room) |
 | `OLLAMA_THINK` | `false` | reasoning mode of thinking models (slower) |
-| `GITHUB_TOKEN` | (none) | free token; raises GitHub limits from 60 to 5,000 requests/hour |
+| `GITHUB_TOKEN` | (none) | free token: private repos, and GitHub limits from 60 to 5,000 requests/hour |
+| `API_ALLOW_LOCAL_PATHS` | `false` | let the web page / `POST /repos` add folders on the server's disk (the CLI always can) |
+| `API_MAX_REPO_MB` | `2048` | largest GitHub repo (as GitHub reports it) the web page will add |
 | `GITHUB_WEBHOOK_SECRET` | (none) | enables `POST /webhooks/github` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `BAAI/bge-small-en-v1.5` / `384` | changing the model triggers a full re-embed |
 | `MCP_TRANSPORT` | `http` | `http`, `stdio` or `inmemory` |
@@ -318,7 +345,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 108 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 127 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

@@ -2,10 +2,15 @@
 
 Managed clones live under DATA_DIR/repos and may be fetched/reset by sync. A user-supplied
 local path is never modified: BadeBhai only reads it.
+
+A GitHub token, when configured, reaches git only through environment config for the git process
+(an `http.https://github.com/.extraheader`), so it is sent to github.com alone and is never written
+into the clone's .git/config, its remote URL, the command line, or logs.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import subprocess
@@ -19,6 +24,8 @@ log = get_logger(__name__)
 _GITHUB = re.compile(
     r"^(?:https?://(?:www\.)?github\.com/|git@github\.com:)?(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
 )
+_REF = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_./+-]{0,199}$")  # never starts with '-': no git option injection
+_REMOTE = re.compile(r"^(?:https?://|ssh://|git@)[^\s]+$")
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
 
 
@@ -26,13 +33,28 @@ class GitError(RuntimeError):
     pass
 
 
-def git(cwd: Path | str, *args: str, timeout: float = 300, check: bool = True) -> str:
+def git_env(token: str | None = None) -> dict[str, str]:
+    """Environment for git; with a token, authenticate requests to github.com (only) with it."""
+    if not token:
+        return _GIT_ENV
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        **_GIT_ENV,
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
+    }
+
+
+def git(
+    cwd: Path | str, *args: str, timeout: float = 300, check: bool = True, token: str | None = None
+) -> str:
     proc = subprocess.run(
         ["git", "-c", "core.quotepath=off", *args],
         cwd=str(cwd),
         capture_output=True,
         timeout=timeout,
-        env=_GIT_ENV,
+        env=git_env(token),
     )
     if check and proc.returncode != 0:
         raise GitError(
@@ -57,20 +79,43 @@ class RepoSource:
 
 def github_full_name_from_url(url: str) -> str | None:
     m = _GITHUB.match(url.strip())
+    if m and (m.group("owner").startswith(".") or m.group("repo") in (".", "..")):
+        return None  # ./x, ../x are paths, not GitHub names
     if m and (url.startswith(("http", "git@")) or url.count("/") == 1):
         return f"{m.group('owner')}/{m.group('repo')}"
     return None
 
 
-def parse_source(source: str, repos_dir: Path, ref: str | None = None, name: str | None = None) -> RepoSource:
-    """Accepts a local path, `owner/name`, a GitHub URL, or any git URL; `@ref` suffix allowed."""
+class LocalSourceRefused(ValueError):
+    pass
+
+
+def parse_source(
+    source: str,
+    repos_dir: Path,
+    ref: str | None = None,
+    name: str | None = None,
+    allow_local: bool = True,
+) -> RepoSource:
+    """Accepts a local path, `owner/name`, a GitHub URL, or any git URL; `@ref` suffix allowed.
+
+    `allow_local=False` (requests from the web API) never reads a path on the server's disk:
+    `owner/name` is always GitHub, and paths and file:// URLs are refused."""
     src = source.strip()
     if ref is None and "@" in src and not src.startswith("git@"):
         base, _, maybe_ref = src.rpartition("@")
         if base and "/" not in maybe_ref:
             src, ref = base, maybe_ref
+    if ref is not None and not _REF.match(ref):
+        raise ValueError(f"{ref!r} is not a valid branch, tag or commit name")
     local = Path(src).expanduser()
-    if local.exists():
+    if not allow_local:
+        if src.startswith("file:") or (not github_full_name_from_url(src) and not _REMOTE.match(src)):
+            raise LocalSourceRefused(
+                f"{source!r} is not a GitHub address or git URL (local folders can only be added "
+                "from the command line)"
+            )
+    elif local.exists():
         local = local.resolve()
         full = None
         if (local / ".git").exists():
@@ -83,20 +128,20 @@ def parse_source(source: str, repos_dir: Path, ref: str | None = None, name: str
         return RepoSource(
             "github", f"https://github.com/{full}.git", repos_dir / slug, name or full, ref, full
         )
-    if src.startswith(("http://", "https://", "git@", "ssh://", "file://")):
+    if _REMOTE.match(src) or (allow_local and src.startswith("file://")):
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", src.rstrip("/").removesuffix(".git").split("/")[-1])
         return RepoSource("git", src, repos_dir / slug, name or slug, ref, None)
     raise ValueError(f"cannot resolve repository source {source!r}: not a path, owner/name, or git URL")
 
 
-def ensure_clone(src: RepoSource) -> None:
+def ensure_clone(src: RepoSource, token: str | None = None) -> None:
     """Clone a managed repo if needed and check out `src.ref` (branch, tag, or sha)."""
     if not src.managed:
         return
     if not (src.local_path / ".git").exists():
         src.local_path.parent.mkdir(parents=True, exist_ok=True)
         log.info("cloning", extra={"url": src.url, "dest": str(src.local_path)})
-        git(src.local_path.parent, "clone", "--quiet", src.url, str(src.local_path), timeout=900)
+        git(src.local_path.parent, "clone", "--quiet", src.url, str(src.local_path), timeout=900, token=token)
     if src.ref is None:
         src.ref = git(src.local_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
     checkout_ref(src.local_path, src.ref)
@@ -115,19 +160,19 @@ def checkout_ref(path: Path, ref: str) -> None:
         git(path, "checkout", "--quiet", "--detach", ref)
 
 
-def update_managed_clone(path: Path, ref: str | None) -> None:
+def update_managed_clone(path: Path, ref: str | None, token: str | None = None) -> None:
     """Fetch and move the managed working copy to the latest commit of its tracked ref."""
-    git(path, "fetch", "--quiet", "--tags", "--force", "origin", timeout=600)
+    git(path, "fetch", "--quiet", "--tags", "--force", "origin", timeout=600, token=token)
     if ref and is_remote_branch(path, ref):
         git(path, "reset", "--quiet", "--hard", f"origin/{ref}")
     elif ref:
         git(path, "checkout", "--quiet", "--detach", ref)
 
 
-def fetch_commit(path: Path, sha: str) -> None:
+def fetch_commit(path: Path, sha: str, token: str | None = None) -> None:
     """Make sure `sha` is present locally (webhook pushes may be ahead of our clone)."""
     if not _has_commit(path, sha):
-        git(path, "fetch", "--quiet", "origin", timeout=600)
+        git(path, "fetch", "--quiet", "origin", timeout=600, token=token)
 
 
 def _has_commit(path: Path, sha: str) -> bool:
@@ -172,12 +217,12 @@ def working_tree_changes(path: Path) -> set[str]:
     return {e[3:] for e in entries if len(e) > 3}
 
 
-def ensure_wiki_clone(full_name: str, repos_dir: Path) -> Path | None:
+def ensure_wiki_clone(full_name: str, repos_dir: Path, token: str | None = None) -> Path | None:
     """Clone (or update) the GitHub wiki of `full_name`. Returns None when the repo has no wiki."""
     dest = repos_dir / (full_name.replace("/", "__") + ".wiki")
     try:
         if (dest / ".git").exists():
-            git(dest, "pull", "--quiet", "--ff-only", timeout=120, check=False)
+            git(dest, "pull", "--quiet", "--ff-only", timeout=120, check=False, token=token)
         else:
             git(
                 repos_dir,
@@ -188,6 +233,7 @@ def ensure_wiki_clone(full_name: str, repos_dir: Path) -> Path | None:
                 f"https://github.com/{full_name}.wiki.git",
                 str(dest),
                 timeout=120,
+                token=token,
             )
         return dest
     except (GitError, subprocess.TimeoutExpired):

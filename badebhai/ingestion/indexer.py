@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -37,6 +38,14 @@ from badebhai.log import get_logger
 log = get_logger(__name__)
 
 _EMBED_BATCH_CHUNKS = 256
+
+Progress = Callable[[str, int, int], None]  # (stage, done, total): "downloading" | "indexing"
+
+
+def _no_progress(stage: str, done: int, total: int) -> None:
+    pass
+
+
 _LOCK_BASE = 910_000
 
 
@@ -84,29 +93,45 @@ class Indexer:
         )
 
     # ---------------- entry points ----------------
-    def ingest(self, source: str, ref: str | None = None, name: str | None = None) -> IndexReport:
-        src = parse_source(source, self.settings.repos_dir, ref=ref, name=name)
-        ensure_clone(src)
+    def ingest(
+        self,
+        source: str,
+        ref: str | None = None,
+        name: str | None = None,
+        progress: Progress | None = None,
+        allow_local: bool = True,
+    ) -> IndexReport:
+        progress = progress or _no_progress
+        token = self.settings.github_token
+        src = parse_source(source, self.settings.repos_dir, ref=ref, name=name, allow_local=allow_local)
+        progress("downloading", 0, 0)
+        ensure_clone(src, token=token)
         wiki = None
         if self.settings.index_wiki and src.github_full_name and src.managed:
-            wiki = ensure_wiki_clone(src.github_full_name, self.settings.repos_dir)
+            wiki = ensure_wiki_clone(src.github_full_name, self.settings.repos_dir, token=token)
         repo = repo_db.upsert_repo(self.pool, src, wiki)
-        return self.reindex(repo, candidates=None, mode="full")
+        return self.reindex(repo, candidates=None, mode="full", progress=progress)
 
     def sync(
-        self, repo_name: str, target_commit: str | None = None, hinted_paths: set[str] | None = None
+        self,
+        repo_name: str,
+        target_commit: str | None = None,
+        hinted_paths: set[str] | None = None,
+        progress: Progress | None = None,
     ) -> IndexReport:
         """Bring the index up to date with the repo's tracked ref (or `target_commit`)."""
         repo = repo_db.get_repo(self.pool, repo_name)
         if repo is None:
             raise KeyError(f"unknown repo {repo_name!r}; ingest it first")
         path = Path(repo.local_path)
+        token = self.settings.github_token
         if repo.managed:
+            (progress or _no_progress)("downloading", 0, 0)
             if target_commit:
-                fetch_commit(path, target_commit)
-            update_managed_clone(path, repo.ref)
+                fetch_commit(path, target_commit, token=token)
+            update_managed_clone(path, repo.ref, token=token)
             if repo.wiki_path and repo.github_full_name:
-                ensure_wiki_clone(repo.github_full_name, self.settings.repos_dir)
+                ensure_wiki_clone(repo.github_full_name, self.settings.repos_dir, token=token)
         candidates: set[str] | None = None
         mode = "full-scan"
         if repo.last_indexed_commit:
@@ -119,7 +144,7 @@ class Indexer:
                 if repo.wiki_path:
                     candidates |= {f"wiki/{p}" for p in self._wiki_files(repo)}
                 mode = "incremental"
-        return self.reindex(repo, candidates=candidates, mode=mode)
+        return self.reindex(repo, candidates=candidates, mode=mode, progress=progress)
 
     # ---------------- core ----------------
     def _wiki_files(self, repo: repo_db.RepoRecord) -> list[str]:
@@ -133,7 +158,11 @@ class Indexer:
         return files
 
     def reindex(
-        self, repo: repo_db.RepoRecord, candidates: set[str] | None, mode: str = "full"
+        self,
+        repo: repo_db.RepoRecord,
+        candidates: set[str] | None,
+        mode: str = "full",
+        progress: Progress | None = None,
     ) -> IndexReport:
         t0 = time.perf_counter()
         report = IndexReport(repo=repo.name, mode=mode)
@@ -141,7 +170,7 @@ class Indexer:
             lock_conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_BASE + repo.id,))
             lock_conn.commit()
             try:
-                self._reindex_locked(repo, candidates, report)
+                self._reindex_locked(repo, candidates, report, progress or _no_progress)
             finally:
                 lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_BASE + repo.id,))
                 lock_conn.commit()
@@ -150,7 +179,11 @@ class Indexer:
         return report
 
     def _reindex_locked(
-        self, repo: repo_db.RepoRecord, candidates: set[str] | None, report: IndexReport
+        self,
+        repo: repo_db.RepoRecord,
+        candidates: set[str] | None,
+        report: IndexReport,
+        progress: Progress,
     ) -> None:
         current = self._current_files(repo)
         known = repo_db.file_hashes(self.pool, repo.id)
@@ -163,10 +196,13 @@ class Indexer:
         removed = set(known) - current
         to_check = current if (candidates is None or force) else (candidates & current)
         report.files_seen = len(to_check)
+        progress("indexing", 0, len(to_check))
 
         pending: list[_PendingFile] = []
         pending_chunks = 0
-        for rel in sorted(to_check):
+        for n, rel in enumerate(sorted(to_check)):
+            if n % 10 == 0:
+                progress("indexing", n, len(to_check))
             got = read_text_file(repo.resolve(rel), self.settings.max_file_bytes)
             if got is None:
                 report.files_skipped += 1
@@ -190,6 +226,7 @@ class Indexer:
                 pending, pending_chunks = [], 0
         if pending:
             self._write(repo.id, pending, report)
+        progress("indexing", len(to_check), len(to_check))
         if removed:
             with self.pool.connection() as conn:
                 conn.execute(

@@ -162,7 +162,81 @@ details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .memories li { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .memories .cat { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 
+/* ---------------------------------------------------------------- add a repository */
+button.primary, button.primary-soft { border: none; border-radius: 8px; }
+button.primary { background: var(--accent); color: #fff; padding: 7px 16px; }
+button.primary:disabled { opacity: .55; cursor: progress; }
+button.primary-soft { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+button.big { padding: 11px 20px; font-size: 16px; border-radius: var(--radius); margin-top: 6px; }
+.welcome p { max-width: 560px; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+
+dialog#add-dialog {
+  width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgba(0, 0, 0, .25);
+}
+dialog#add-dialog::backdrop { background: rgba(20, 20, 18, .45); }
+.add { padding: 18px 22px 20px; }
+.add-head { display: flex; justify-content: space-between; align-items: center; }
+.add-head h2 { margin: 0; font-size: 19px; }
+.add .close { border: none; background: none; font-size: 24px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+.add > .hint { margin: 6px 0 12px; }
+.add-row { display: flex; gap: 8px; }
+.add-row input {
+  flex: 1; min-width: 0; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--bg); font-family: var(--mono); font-size: 14px;
+}
+.add-row input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.add-row button { padding: 0 22px; border-radius: var(--radius); }
+.add .hint.small { margin: 8px 0 0; line-height: 1.8; }
+.add code, .token code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+
+.add-progress { margin-top: 16px; }
+.job { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; background: var(--bg); }
+.job.failed { border-color: var(--bad); }
+.job.done { border-color: var(--ok); }
+.job-title { font-size: 14.5px; }
+.job details { margin-top: 8px; }
+.job pre { white-space: pre-wrap; font: 12px/1.45 var(--mono); background: var(--code-bg); padding: 8px; border-radius: 7px; max-height: 160px; overflow: auto; }
+.job-actions { display: flex; gap: 8px; margin-top: 10px; }
+.stages { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 4px; font-size: 13.5px; }
+.stages li { color: var(--muted); padding-left: 24px; position: relative; }
+.stages li::before { content: "○"; position: absolute; left: 4px; }
+.stages li.active { color: var(--text); font-weight: 600; }
+.stages li.active::before { content: "◐"; color: var(--accent); animation: spin 1.2s linear infinite; display: inline-block; }
+.stages li.done::before { content: "✓"; color: var(--ok); }
+.stages li.failed { color: var(--bad); }
+.stages li.failed::before { content: "✕"; color: var(--bad); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin: 6px 0 6px; }
+.bar span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .6s ease; }
+.bar span.indeterminate { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
+.ok-line { color: var(--ok); font-weight: 600; font-size: 14px; }
+.err-line { color: var(--bad); font-size: 14px; }
+
+.token { margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-size: 13.5px; }
+.token.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.token.attention { border-color: var(--warn); background: var(--warn-soft); }
+.token summary { font-size: 13.5px; color: var(--text); font-weight: 600; }
+.token ol { padding-left: 20px; margin: 8px 0; display: grid; gap: 6px; }
+.token a { color: var(--accent); }
+.copyline { margin-top: 6px; }
+.copyline code { display: inline-block; user-select: all; padding: 4px 8px; }
+
+.add h3 { font-size: 14px; margin: 20px 0 6px; color: var(--muted); font-weight: 600; }
+.repo-list { list-style: none; padding: 0; margin: 0; }
+.repo-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.repo-list .name { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }
+.repo-list .name a { color: var(--text); text-decoration: none; }
+.repo-list .name a:hover { text-decoration: underline; }
+.repo-list .actions { display: flex; gap: 14px; flex-shrink: 0; font-size: 13px; }
+
 @media (max-width: 900px) {
+  .add-row { flex-direction: column; }
+  .add-row button { padding: 10px; }
   .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(240px, 40vh); }
   .chat { border-right: none; border-bottom: 1px solid var(--border); }
   .tagline { display: none; }

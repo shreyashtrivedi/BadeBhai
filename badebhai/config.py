@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     sync_poll_interval_s: int = 0  # 0 disables the polling loop
     auto_ingest_repo: str | None = None  # e.g. https://github.com/psf/requests@v2.32.3
 
+    # --- adding repos from the web UI / POST /repos ---
+    # Off by default: anyone who can open the web page could otherwise index (and then read) any
+    # folder on the server's disk. The CLI (`badebhai ingest <path>`) always accepts local paths.
+    api_allow_local_paths: bool = False
+    api_max_repo_mb: int = 2048  # refuse bigger GitHub repos from the web UI (GitHub-reported size)
+
     # --- agent guardrails ---
     max_subquestions: int = 5
     max_retries: int = 2  # query-rewrite retries per sub-question

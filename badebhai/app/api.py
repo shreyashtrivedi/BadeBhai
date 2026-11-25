@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from badebhai.app.agent.runner import AgentRunner
 from badebhai.app.mcp_client import McpToolbox
 from badebhai.app.memory.store import MemoryStore
 from badebhai.app.naive import answer_naive
+from badebhai.app.onboarding import TOKEN_URL, AddRepoError, check_source, explain_failure
 from badebhai.app.schemas import AskRequest, AskResponse
 from badebhai.config import Settings, configure_tracing, get_settings
 from badebhai.db import repos as repo_db
@@ -32,6 +34,7 @@ from badebhai.ingestion.sync import poll_forever
 from badebhai.ingestion.webhook import parse_push, verify_signature
 from badebhai.llm import LLMError, LLMProvider, LLMUnavailable, get_llm, track_usage
 from badebhai.log import get_logger, setup_logging
+from badebhai.mcp_servers.github_client import GitHubClient
 from badebhai.retrieval.hybrid import hybrid_search
 
 log = get_logger(__name__)
@@ -44,11 +47,15 @@ class IngestRequest(BaseModel):
     name: str | None = None
 
 
+_MAX_JOBS_KEPT = 50
+
+
 def create_app(
     settings: Settings | None = None,
     llm: LLMProvider | None = None,
     toolbox_factory: Callable[[], McpToolbox] | None = None,
     checkpointer=None,
+    github: GitHubClient | None = None,
 ) -> FastAPI:
     s = settings or get_settings()
 
@@ -64,6 +71,9 @@ def create_app(
         await asyncio.to_thread(st.embedder.embed_query, "warm up")
         st.llm = llm or get_llm(s)
         st.jobs = {}
+        st.github = github or GitHubClient(
+            s.github_token, s.github_api_url, s.github_cache_ttl_s, timeout_s=8.0
+        )
         st.indexer = Indexer(s, st.pool, st.embedder)
         st.memory = MemoryStore(st.pool, st.embedder, s)
         saver_cm = None
@@ -124,18 +134,35 @@ def create_app(
             raise HTTPException(404, f"repo {name!r} is not indexed; POST /repos to ingest it")
         return repo
 
-    def _start_job(app: FastAPI, kind: str, fn: Callable[[], Any], **meta: Any) -> str:
+    def _start_job(
+        app: FastAPI,
+        kind: str,
+        fn: Callable[[Callable[[str, int, int], None]], Any],
+        explain: Callable[[BaseException], dict] | None = None,
+        **meta: Any,
+    ) -> str:
+        """Run `fn(progress)` in a worker thread; its state is polled through GET /jobs/{id}."""
         job_id = uuid.uuid4().hex[:12]
         jobs = app.state.jobs
-        jobs[job_id] = {"status": "running", "kind": kind, **meta}
+        finished = [k for k, v in jobs.items() if v["status"] != "running"]
+        for old in finished[: max(0, len(jobs) - _MAX_JOBS_KEPT)]:
+            jobs.pop(old, None)
+        base = {"id": job_id, "kind": kind, "started_at": time.time(), **meta}
+        jobs[job_id] = {**base, "status": "running", "progress": {"stage": "starting", "done": 0, "total": 0}}
+
+        def progress(stage: str, done: int, total: int) -> None:
+            jobs[job_id]["progress"] = {"stage": stage, "done": done, "total": total}
 
         def run() -> None:
             try:
-                rep = fn()
-                jobs[job_id] = {"status": "done", "kind": kind, **meta, "report": rep.to_dict()}
+                rep = fn(progress)
+                end = {"progress": jobs[job_id]["progress"], "finished_at": time.time()}
+                jobs[job_id] = {**base, **end, "status": "done", "report": rep.to_dict()}
             except Exception as e:  # surfaced through /jobs
                 log.exception("job failed", extra={"kind": kind})
-                jobs[job_id] = {"status": "failed", "kind": kind, **meta, "error": str(e)}
+                err = explain(e) if explain else {"error": str(e)}
+                end = {"progress": jobs[job_id]["progress"], "finished_at": time.time()}
+                jobs[job_id] = {**base, **end, "status": "failed", **err}
 
         asyncio.get_running_loop().run_in_executor(None, run)
         return job_id
@@ -148,10 +175,21 @@ def create_app(
         if existing is not None:
             if existing.embedding_model != app.state.indexer.signature:  # new embedder / chunker version
                 log.info("index signature changed; re-syncing", extra={"repo": existing.name})
-                _start_job(app, "sync", lambda: app.state.indexer.sync(existing.name), repo=existing.name)
+                _start_job(
+                    app,
+                    "sync",
+                    lambda p: app.state.indexer.sync(existing.name, progress=p),
+                    repo=existing.name,
+                )
             return
         log.info("auto-ingesting", extra={"source": source})
-        _start_job(app, "ingest", lambda: app.state.indexer.ingest(source), source=source)
+        _start_job(
+            app,
+            "ingest",
+            lambda p: app.state.indexer.ingest(source, progress=p),
+            source=source,
+            repo=src.name,
+        )
 
     # ------------------------------------------------------------------ routes
     @app.get("/health")
@@ -173,28 +211,97 @@ def create_app(
                 ],
             }
 
+    @app.get("/setup")
+    async def setup() -> dict[str, Any]:
+        """What the web UI needs to guide someone adding a repo. Never includes the token itself."""
+        return {
+            "github_token": bool(s.github_token),
+            "allow_local_paths": s.api_allow_local_paths,
+            "max_repo_mb": s.api_max_repo_mb,
+            "token_url": TOKEN_URL,
+        }
+
     @app.get("/repos")
     async def list_repos(request: Request) -> list[dict]:
         repos = await asyncio.to_thread(repo_db.list_repos, request.app.state.pool)
         return [r.to_public() for r in repos]
 
+    def _running_job(app: FastAPI, repo: str) -> dict | None:
+        return next(
+            (j for j in app.state.jobs.values() if j["status"] == "running" and j.get("repo") == repo), None
+        )
+
     @app.post("/repos", status_code=202)
-    async def ingest(request: Request, body: IngestRequest) -> dict:
-        idx = request.app.state.indexer
+    async def ingest(request: Request, body: IngestRequest) -> JSONResponse:
+        """Add a repository: check it first (friendly errors, nothing downloaded yet), then index it
+        in the background. Poll GET /jobs/{job_id} for progress."""
+        st = request.app.state
+        source = f"{body.source.strip()}@{body.ref}" if body.ref else body.source
+        try:
+            checked = await asyncio.to_thread(check_source, source, s, st.github)
+        except AddRepoError as e:
+            return JSONResponse(status_code=e.status, content=e.to_dict())
+        name = body.name or checked.repo.name
+        if job := _running_job(request.app, name):
+            return JSONResponse(
+                status_code=202,
+                content={"job_id": job["id"], "status": "running", "repo": name, "already_running": True},
+            )
+        existing = await asyncio.to_thread(repo_db.get_repo, st.pool, name)
+        if existing is not None and existing.last_indexed_commit and checked.repo.ref in (None, existing.ref):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"{name} is already added. You can ask about it now, or check it for new commits.",
+                    "repo": name,
+                    "already_indexed": True,
+                    "can_update": existing.managed and name.count("/") == 1,
+                },
+            )
+        has_token, kind = bool(s.github_token), checked.repo.kind
         job_id = _start_job(
             request.app,
             "ingest",
-            lambda: idx.ingest(body.source, ref=body.ref, name=body.name),
-            source=body.source,
+            lambda p: st.indexer.ingest(
+                checked.source, name=body.name, progress=p, allow_local=s.api_allow_local_paths
+            ),
+            explain=lambda e: explain_failure(e, has_token, kind),
+            source=checked.source,
+            repo=name,
+            about=checked.about,
+            warnings=checked.warnings,
         )
-        return {"job_id": job_id, "status": "running"}
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id": job_id,
+                "status": "running",
+                "repo": name,
+                "about": checked.about,
+                "warnings": checked.warnings,
+            },
+        )
 
     @app.post("/repos/{owner}/{name}/sync", status_code=202)
     async def sync_repo(request: Request, owner: str, name: str) -> dict:
         full = f"{owner}/{name}"
-        _repo(request, full)
-        job_id = _start_job(request.app, "sync", lambda: request.app.state.indexer.sync(full), repo=full)
-        return {"job_id": job_id, "status": "running"}
+        repo = _repo(request, full)
+        if job := _running_job(request.app, full):
+            return {"job_id": job["id"], "status": "running", "repo": full, "already_running": True}
+        has_token = bool(s.github_token)
+        kind = "github" if repo.github_full_name else repo.kind
+        job_id = _start_job(
+            request.app,
+            "sync",
+            lambda p: request.app.state.indexer.sync(full, progress=p),
+            explain=lambda e: explain_failure(e, has_token, kind),
+            repo=full,
+        )
+        return {"job_id": job_id, "status": "running", "repo": full}
+
+    @app.get("/jobs")
+    async def list_jobs(request: Request, status: str | None = None) -> list[dict]:
+        return [j for j in request.app.state.jobs.values() if status is None or j["status"] == status]
 
     @app.get("/jobs/{job_id}")
     async def job(request: Request, job_id: str) -> dict:
@@ -307,7 +414,9 @@ def create_app(
         job_id = _start_job(
             request.app,
             "webhook-sync",
-            lambda: st.indexer.sync(repo.name, target_commit=push.after, hinted_paths=push.touched),
+            lambda p: st.indexer.sync(
+                repo.name, target_commit=push.after, hinted_paths=push.touched, progress=p
+            ),
             repo=repo.name,
             after=push.after,
         )
