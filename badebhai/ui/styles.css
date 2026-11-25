@@ -261,6 +261,7 @@ dialog#code-dialog::backdrop { background: rgba(20, 20, 18, .45); }
 .code .no { display: inline-block; width: 56px; flex-shrink: 0; text-align: right; padding-right: 14px; color: var(--muted); user-select: none; }
 .code .ln.hl .no { color: var(--accent); font-weight: 600; }
 .snippet { margin: 0 16px 16px; white-space: pre-wrap; font: 12px/1.45 var(--mono); }
+.map { margin: 0; padding: 14px 18px; white-space: pre-wrap; font: 12.5px/1.6 var(--mono); }
 
 /* ---------------------------------------------------------------- accounts */
 .whoami { font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: center; }

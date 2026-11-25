@@ -490,6 +490,15 @@ def create_app(
                 return {"repo": name, "removed_from_your_list": True}
         return await asyncio.to_thread(request.app.state.indexer.remove, name, not keep_memories)
 
+    @app.get("/overview")
+    async def overview(request: Request, repo: str, path_prefix: str = "") -> dict:
+        """The repository map (directories, main symbols, entry points), as the agent's repo_overview."""
+        from badebhai.retrieval.overview import build_overview
+
+        r = _repo(request, repo)
+        data = await asyncio.to_thread(build_overview, request.app.state.pool, r, path_prefix)
+        return {"repo": r.name, "commit": r.last_indexed_commit, "map": data["items"][0]["content"]}
+
     @app.get("/file")
     async def view_file(request: Request, repo: str, path: str) -> dict:
         """An indexed file's text for the citation viewer (secrets redacted, like everything indexed).

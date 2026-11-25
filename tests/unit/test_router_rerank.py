@@ -68,3 +68,16 @@ def test_blend_weight_zero_keeps_the_fused_order():
     hits = [_hit(0, "a.py"), _hit(1, "b.py"), _hit(2, "c.py")]
     fake = FakeReranker({"a.py": -5.0, "b.py": 6.0, "c.py": 0.0})
     assert [h.path for h in rerank("q", hits, fake, weight=0.0, top_n=3)] == ["a.py", "b.py", "c.py"]
+
+
+def test_big_picture_questions_start_from_the_repo_map():
+    from badebhai.app.agent.planning import repair_plan
+
+    tools = {"search_code": None, "search_docs": None, "repo_overview": None}
+    q = "What are the main parts of this codebase?"
+    calls = repair_plan([], q, ["code"], q, tools, max_calls=4, context=q, baseline=True)
+    assert calls[0] == {"tool": "repo_overview", "args": {}}
+    plain = repair_plan(
+        [], "Where is auth?", ["code"], "auth", tools, 4, context="Where is auth?", baseline=True
+    )
+    assert all(c["tool"] != "repo_overview" for c in plain)

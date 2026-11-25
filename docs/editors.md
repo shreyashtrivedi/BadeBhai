@@ -7,7 +7,7 @@ use both:
 | Server | What your assistant gets | Needs |
 |---|---|---|
 | **`assistant`** (recommended) | `ask` (BadeBhai's full research loop: a cited, verified answer), `list_repos`, `add_repo` | BadeBhai running (`docker compose up` or `badebhai serve`) |
-| **`code_search`, `git_history`, `docs`** | the raw search tools BadeBhai's own agent uses (15 tools such as `search_code`, `file_outline`, `search_commits`, `blame`, `search_issues`, `search_docs`) | the same; Docker publishes them on `localhost:8101-8103` |
+| **`code_search`, `git_history`, `docs`** | the raw search tools BadeBhai's own agent uses (16 tools such as `search_code`, `repo_overview`, `file_outline`, `search_commits`, `blame`, `search_issues`, `search_docs`) | the same; Docker publishes them on `localhost:8101-8103` |
 
 `assistant` is the simplest: your assistant asks one question and gets an answer with file/line
 citations. The raw servers suit assistants that want to do their own searching.

@@ -39,6 +39,13 @@ def build_server(deps: Deps | None = None) -> MCPServer:
         """List indexed documentation files, optionally under a prefix such as "docs/"."""
         return t.list_files(deps, repo, path_prefix, "doc", limit)
 
+    @mcp.tool()
+    @tool_errors
+    def release_notes(repo: str, version: str) -> dict:
+        """The changelog / release-notes section for one version (e.g. "2.32.0"): what changed, was
+        fixed or deprecated in that release, quoted exactly from HISTORY/CHANGELOG/NEWS files."""
+        return t.release_notes(deps, repo, version)
+
     return mcp
 
 

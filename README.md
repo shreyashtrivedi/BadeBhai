@@ -228,7 +228,7 @@ facts, add it to the eval, and that failure is measured from then on.
 
 | Server | Port | Tools |
 |---|---|---|
-| `code_search` | 8101 | `search_code`, `read_code`, `file_outline`, `list_files` |
+| `code_search` | 8101 | `search_code`, `read_code`, `file_outline`, `list_files`, `repo_overview` |
 | `git_history` | 8102 | `search_commits`, `get_commit`, `blame`, `file_history`, `recent_changes`, `search_issues`, `get_issue`, `prs_for_commit` |
 | `docs` | 8103 | `search_docs`, `read_doc`, `list_docs` |
 | `assistant` | 8104 | `ask`, `list_repos`, `add_repo` (a thin client of the API, for editors) |

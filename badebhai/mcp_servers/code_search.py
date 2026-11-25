@@ -5,7 +5,7 @@ from __future__ import annotations
 from mcp.server.mcpserver import MCPServer
 
 from badebhai.mcp_servers import _index_tools as t
-from badebhai.mcp_servers.common import Deps, run, tool_errors
+from badebhai.mcp_servers.common import Deps, clamp, run, tool_errors
 
 INSTRUCTIONS = (
     "Read-only access to the source code of repositories indexed by BadeBhai. Start with search_code; "
@@ -48,6 +48,18 @@ def build_server(deps: Deps | None = None) -> MCPServer:
     def list_files(repo: str, path_prefix: str = "", limit: int = 200) -> dict:
         """List indexed source files, optionally under a directory prefix such as "src/api/"."""
         return t.list_files(deps, repo, path_prefix, "code", limit)
+
+    @mcp.tool()
+    @tool_errors
+    def repo_overview(repo: str, path_prefix: str = "", depth: int = 2) -> dict:
+        """A map of the repository: its directories (size, languages, main classes and functions with
+        file:line), project files and likely entry points, plus the README's opening and the main
+        modules' docstrings. Use it for "what are the main parts / how is this organized / where do
+        I start" questions, then read the files it points to. path_prefix narrows it to a folder.
+        """
+        from badebhai.retrieval.overview import build_overview
+
+        return build_overview(deps.pool, deps.repo(repo), path_prefix, clamp(depth, 1, 4, 2))
 
     return mcp
 

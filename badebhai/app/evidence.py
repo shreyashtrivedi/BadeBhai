@@ -81,6 +81,15 @@ def evidence_from_tool(tool: str, payload: dict[str, Any]) -> list[Evidence]:
                 url=item.get("url"),
                 date=item.get("date"),
             )
+        elif typ == "map":
+            ev = Evidence(
+                key=f"map:{item.get('repo', '')}:{item.get('prefix', '')}",
+                type="map",
+                source_tool=tool,
+                title=(item.get("title") or "repository map")[:200],
+                content=content,
+                path=item.get("prefix") or None,
+            )
         else:
             continue
         ev.suspicious = looks_injected(ev.content) or looks_injected(ev.title)

@@ -109,6 +109,7 @@ async function init() {
   $("#messages").addEventListener("click", (e) => { const b = e.target.closest(".cite"); if (b) focusCitation(Number(b.dataset.n)); });
   $("#panel-citations").addEventListener("click", (e) => { const b = e.target.closest("[data-view]"); if (b) viewCitation(Number(b.dataset.view)); });
   $("#code-close").addEventListener("click", () => $("#code-dialog").close());
+  $("#show-map").addEventListener("click", showMap);
   $("#code-dialog").addEventListener("click", (e) => { if (e.target === $("#code-dialog")) $("#code-dialog").close(); });
 }
 
@@ -653,6 +654,22 @@ function addFeedback(holder, r) {
     box.querySelector(".fb-send").addEventListener("click", () => send(-1, input.value.trim() || null));
     input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") send(-1, input.value.trim() || null); });
   });
+}
+
+// ---------------------------------------------------------------- repository map
+async function showMap() {
+  const repo = $("#repo").value;
+  if (!repo) return;
+  const dlg = $("#code-dialog"), body = $("#code-body");
+  $("#code-title").textContent = `Map of ${repo}`;
+  $("#code-sub").textContent = "Directories, main files, classes and functions, from BadeBhai's index";
+  $("#code-github").hidden = true;
+  body.innerHTML = `<p class="muted small" style="padding:16px">Loading…</p>`;
+  if (!dlg.open) dlg.showModal();
+  try {
+    const m = await api(`/overview?repo=${encodeURIComponent(repo)}`);
+    body.innerHTML = `<pre class="map">${esc(m.map)}</pre>`;
+  } catch (e) { body.innerHTML = `<p class="err-line" style="padding:16px">${esc(e.message)}</p>`; }
 }
 
 // ---------------------------------------------------------------- code viewer

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from badebhai.db.repos import RepoRecord
@@ -148,3 +149,37 @@ def outline(deps: Deps, repo: str, path: str) -> dict:
         if s and t not in ("module", "body")
     ]
     return {"repo": r.name, "path": path, "symbols": symbols}
+
+
+_CHANGELOG = r"(^|/)(history|changelog|changes|news|releases?|release[-_]notes)[^/]*$"
+
+
+def release_notes(deps: Deps, repo: str, version: str) -> dict:
+    """The changelog section(s) whose heading names `version` (exact lines, ready to cite)."""
+    r = deps.repo(repo)
+    v = version.strip().lstrip("vV")
+    if not re.fullmatch(r"\d+(\.\d+){1,3}", v):
+        raise ToolError(f"{version!r} is not a version number like 2.32.0", "bad_arguments")
+    pattern = r"(^|[^0-9.])v?" + re.escape(v) + r"([^0-9.]|$)"
+    with deps.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT path, start_line, end_line, content, symbol FROM chunks WHERE repo_id = %s AND kind = 'doc' "
+            "AND symbol ~ %s ORDER BY (path ~* %s) DESC, length(path), start_line LIMIT 4",
+            (r.id, pattern, _CHANGELOG),
+        ).fetchall()
+    items = [
+        {
+            "type": "doc",
+            "path": path,
+            "start_line": s,
+            "end_line": e,
+            "symbol": sym,
+            "content": content,
+            "url": r.file_url(path, s, e),
+        }
+        for path, s, e, content, sym in rows
+    ]
+    note = (
+        None if items else f"no changelog section mentions {v}; try search_docs or changes_between_versions"
+    )
+    return {"repo": r.name, "version": v, "items": items, **({"note": note} if note else {})}

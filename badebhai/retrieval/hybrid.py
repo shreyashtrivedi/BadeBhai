@@ -134,12 +134,17 @@ _STOP = set(
         "please",
     ]
 )
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
+_WORD = re.compile(r"v?\d+\.\d+(?:\.\d+)*|[A-Za-z_][A-Za-z0-9_]*|\d+")
+_VERSION_TOKEN = re.compile(r"^v?(\d+\.\d+(?:\.\d+)*)$")
 
 
 def keyword_terms(query: str, max_terms: int = 16) -> list[str]:
     terms: list[str] = []
     for tok in _WORD.findall(query):
+        if v := _VERSION_TOKEN.match(tok):  # "v2.32.0" -> "2.32.0", Postgres indexes it as one token
+            if v.group(1) not in terms:
+                terms.append(v.group(1))
+            continue
         cands = [tok.lower()]
         if "_" in tok or any(c.isupper() for c in tok[1:]):
             cands += split_identifier(tok)
@@ -154,7 +159,7 @@ def build_tsquery(query: str) -> str | None:
     terms = keyword_terms(query)
     if not terms:
         return None
-    return " | ".join(f"{t}:*" if len(t) >= 4 else t for t in terms)
+    return " | ".join(t if _VERSION_TOKEN.match(t) else (f"{t}:*" if len(t) >= 4 else t) for t in terms)
 
 
 @dataclass

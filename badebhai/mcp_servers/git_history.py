@@ -265,6 +265,43 @@ class GitHistory:
         commits = self._log(r, ["--follow", "-n", str(clamp(limit, 1, 30, 10)), "--", p])
         return {"repo": r.name, "path": p, "items": [self._commit_item(r, c) for c in commits]}
 
+    def _tags(self, r: RepoRecord) -> list[str]:
+        try:
+            out = git(r.local_path, "tag", "--sort=v:refname", timeout=30)
+        except GitError as e:
+            raise ToolError(str(e), "git_error") from e
+        return [t for t in out.split("\n") if t.strip()]
+
+    def changes_between_versions(
+        self, repo: str, version: str, previous: str | None = None, path: str | None = None, limit: int = 30
+    ) -> dict:
+        r = self.deps.repo(repo)
+        v = version.strip().lstrip("vV")
+        tags = self._tags(r)
+        target = next((t for t in tags if t.lstrip("vV") == v), None)
+        if target is None:
+            near = [t for t in tags if t.lstrip("vV").startswith(v.rsplit(".", 1)[0])][-5:]
+            raise ToolError(f"no tag for version {v}", "not_found", did_you_mean=near)
+        releases = [t for t in tags if re.fullmatch(r"v?\d+(\.\d+)*", t)]  # skip rc/dev/beta tags
+        if previous:
+            prev = next((t for t in tags if t.lstrip("vV") == previous.strip().lstrip("vV")), None)
+            if prev is None:
+                raise ToolError(f"no tag for version {previous}", "not_found")
+        else:
+            idx = releases.index(target) if target in releases else len(releases)
+            prev = releases[idx - 1] if idx > 0 else None
+        args = ["--no-merges", "-n", str(clamp(limit, 1, 60, 30)), f"{prev}..{target}" if prev else target]
+        if p := _check_path(path):
+            args += ["--", p]
+        commits = self._log(r, args)
+        touched = Counter(f for c in commits for f in c["files"])
+        return {
+            "repo": r.name,
+            "range": {"from": prev, "to": target, "path": path},
+            "summary": {"commits": len(commits), "top_files": touched.most_common(12)},
+            "items": [self._commit_item(r, c) for c in commits],
+        }
+
     def recent_changes(
         self,
         repo: str,
@@ -433,6 +470,15 @@ def build_server(deps: Deps | None = None, github: GitHubClient | None = None) -
         most-touched files. Use for "what changed in X this month". `repo_head_date` in the result
         is the date of the newest commit in the indexed snapshot."""
         return h.recent_changes(repo, path_prefix, since, until, limit)
+
+    @mcp.tool()
+    @tool_errors
+    def changes_between_versions(
+        repo: str, version: str, previous: str | None = None, path: str | None = None, limit: int = 30
+    ) -> dict:
+        """Commits that went into a release: from the previous release tag to `version` (e.g. "2.32.0"),
+        optionally only those touching `path`. Use for "what changed in / which code changed for X"."""
+        return h.changes_between_versions(repo, version, previous, path, limit)
 
     @mcp.tool()
     @tool_errors

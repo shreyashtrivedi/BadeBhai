@@ -20,4 +20,4 @@ def test_web_ui_is_served(db_settings):
         assert js.status_code == 200 and "/ask/stream" in js.text
         assert c.get("/ui/styles.css").status_code == 200
         tools = c.get("/tools").json()
-        assert set(tools["servers"]) == {"code_search", "git_history", "docs"} and len(tools["tools"]) == 15
+        assert set(tools["servers"]) == {"code_search", "git_history", "docs"} and len(tools["tools"]) == 18

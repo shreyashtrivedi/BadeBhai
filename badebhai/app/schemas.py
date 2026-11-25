@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-EvidenceType = Literal["code", "doc", "commit", "issue", "pr"]
+EvidenceType = Literal["code", "doc", "commit", "issue", "pr", "map"]  # map: BadeBhai's repo overview
 
 
 class Evidence(BaseModel):
@@ -41,6 +41,8 @@ class Evidence(BaseModel):
             return f"commit {self.sha[:10]}"
         if self.type in ("issue", "pr") and self.number is not None:
             return f"{'PR' if self.type == 'pr' else 'issue'} #{self.number}"
+        if self.type == "map":
+            return "repository map" + (f" ({self.path})" if self.path else "")
         return self.key
 
 

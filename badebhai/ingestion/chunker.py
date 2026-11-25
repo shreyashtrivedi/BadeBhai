@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from badebhai.ingestion.languages import TS_SPECS, TSSpec, get_parser
 
 # Bump when chunk boundaries change: indexes built with another version are re-chunked on next sync.
-CHUNKER_VERSION = 2
+CHUNKER_VERSION = 3  # 3: Markdown setext headings (changelog release sections)
 
 
 @dataclass
@@ -57,6 +57,8 @@ def expand_identifiers(text: str) -> str:
 
 
 _MD_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_SETEXT = re.compile(r"^(=+|-+)\s*$")
+_NOT_TITLE = re.compile(r"^\s*([-*+>|]|\d+[.)]\s|```|~~~)")  # list items, quotes, tables, fences
 _RST_ADORN = re.compile(r"""^([=\-~^"'`#*+:.])\1{2,}\s*$""")
 
 
@@ -248,13 +250,24 @@ class Chunker:
             if in_fence:
                 continue
             m = _MD_HEADING.match(line)
-            if m and len(m.group(1)) <= 3:
+            setext = (
+                not m
+                and i < len(lines)
+                and line.strip()
+                and not _NOT_TITLE.match(line)
+                and _SETEXT.match(lines[i])  # next line (lines is 0-based, i is 1-based)
+                and (i == 1 or not lines[i - 2].strip())  # a heading starts its own paragraph
+            )
+            if (m and len(m.group(1)) <= 3) or setext:
                 if i > cur_start:
                     sections.append((cur_start, i - 1, cur_title))
-                level = len(m.group(1))
+                if m:
+                    level, title = len(m.group(1)), m.group(2).strip()
+                else:
+                    level, title = (1 if lines[i].strip().startswith("=") else 2), line.strip()
                 while stack and stack[-1][0] >= level:
                     stack.pop()
-                stack.append((level, m.group(2).strip()))
+                stack.append((level, title))
                 cur_title, cur_start = " > ".join(t for _, t in stack), i
         sections.append((cur_start, len(lines), cur_title))
         return sections

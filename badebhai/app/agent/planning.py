@@ -94,6 +94,71 @@ _TIME_Q = re.compile(
     r"releases?|sprints?)\b|\b(since|between|ago|yesterday|today|recently|lately)\b|"
     r"\b(january|february|march|april|june|july|august|september|october|november|december)\b|\bmay\s+\d"
 )
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+     "november", "december"], start=1)}  # fmt: skip
+_MONTH_NAMES = "|".join(list(_MONTHS) + [m[:3] for m in _MONTHS if len(m) > 3] + ["sept"])
+_ISO = r"\d{4}-\d{2}-\d{2}"
+_CODE_CHANGE_Q = re.compile(
+    r"(?i)\b((which|what) (code|files?|functions?|modules?)|chang(e|ed|es)|fix(ed|es)?|introduc\w*|commits?|added|removed)\b"
+)
+_REPO_PATH = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]*)")  # src/requests, src/requests/models.py
+
+
+def _month(name: str) -> int:
+    name = name.lower()
+    return _MONTHS.get(name) or next(i for m, i in _MONTHS.items() if m.startswith(name[:3]))
+
+
+def parse_window(text: str) -> tuple[str, str | None] | None:
+    """A concrete time window the user named, as git dates: "May 2024", "in 2023", "between
+    2024-05-01 and 2024-05-31", "since March 2024". Relative phrases ("last week") are left alone:
+    they are relative to an indexed snapshot that may be old."""
+    t = text.lower()
+    if m := re.search(rf"(?:between|from)\s+({_ISO})\s+(?:and|to|until)\s+({_ISO})", t):
+        return m.group(1), m.group(2)
+    if m := re.search(rf"\b({_MONTH_NAMES})\.?\s+(\d{{4}})\b", t):
+        y, mo = int(m.group(2)), _month(m.group(1))
+        nxt = f"{y + (mo == 12)}-{1 if mo == 12 else mo + 1:02d}-01"
+        if re.search(rf"\b(since|after)\s+({_MONTH_NAMES})", t):
+            return f"{y}-{mo:02d}-01", None
+        return f"{y}-{mo:02d}-01", nxt
+    if m := re.search(rf"\b(since|after)\s+({_ISO})", t):
+        return m.group(2), None
+    if m := re.search(r"\b(?:in|during)\s+((?:19|20)\d{2})\b", t):
+        return f"{m.group(1)}-01-01", f"{int(m.group(1)) + 1}-01-01"
+    return None
+
+
+def release_calls(question: str, tools) -> list[dict]:
+    """Deterministic first calls for version and time-window questions (small models miss these)."""
+    calls: list[dict] = []
+    path = next((m for m in _REPO_PATH.findall(question) if not re.fullmatch(r"[\d./]+", m)), None)
+    versions = [v.lstrip("vV") for v in _VERSION_Q.findall(question)]
+    if versions:
+        v = versions[0]
+        if "release_notes" in tools:
+            calls.append({"tool": "release_notes", "args": {"version": v}})
+        if "changes_between_versions" in tools and _CODE_CHANGE_Q.search(question):
+            calls.append(
+                {
+                    "tool": "changes_between_versions",
+                    "args": {"version": v, **({"path": path} if path else {})},
+                }
+            )
+    if (win := parse_window(question)) and "recent_changes" in tools:
+        args = {"since": win[0], "limit": 30, **({"until": win[1]} if win[1] else {})}
+        if path:
+            args["path_prefix"] = path.rstrip("/")
+        calls.append({"tool": "recent_changes", "args": args})
+    return calls
+
+
+_OVERVIEW_Q = re.compile(
+    r"(?i)\b(overview|architecture|main (parts|components|modules|pieces)|high[- ]level|structured|organi[sz]ed|"
+    r"layout|where (do|should) i start|new to (this|the) (code|repo|project)|tour|what does (this|the) "
+    r"(repo|repository|project|codebase|library|package) do|how is (this|the) (code|repo|project|codebase))"
+)
 _VERSION_Q = re.compile(r"(?i)\bv?\d+\.\d+(?:\.\d+)?\b")  # "2.31.0": the changelog (docs) says what changed
 
 
@@ -190,6 +255,25 @@ def repair_plan(
                 )
             ):
                 first.append({"tool": tool, "args": {"query": sub_question}})
+    if (
+        baseline
+        and "repo_overview" in tools
+        and "repo_overview" not in present
+        and _OVERVIEW_Q.search(topic_source)
+    ):
+        first.insert(0, {"tool": "repo_overview", "args": {}})  # big-picture questions: start from the map
+    if baseline:  # versions -> release notes (+ the release's commits); named time windows -> that window
+        special = [c for c in release_calls(context or sub_question, tools) if c["tool"] not in present]
+        fixed = [
+            c
+            for c in fixed
+            if not (
+                c["tool"] == "recent_changes"
+                and special
+                and any(x["tool"] == "recent_changes" for x in special)
+            )
+        ]
+        first = special + first
     covered = present | {c["tool"] for c in first}
     base_query = enrich_query(query or sub_question, topic_source)
     last: list[dict] = []
