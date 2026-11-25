@@ -176,6 +176,19 @@ stream in (sub-questions, MCP tool calls, grading, verification); click a citati
 lines in a built-in code viewer (or jump to the commit/issue on GitHub); rate answers 👍/👎; and see or
 delete what BadeBhai remembers about you.
 
+**Auto mode (default).** Simple single-part lookups ("Where is authentication handled?", "How do I
+install it?", "Does it support GraphQL?") take the fast path: one search, about a third of the time.
+Everything else (how/why, history, issues, change planning, multi-part questions, follow-ups that refer
+back) gets the full agent. The rules are in [badebhai/app/router.py](badebhai/app/router.py) and the
+reason is shown on every answer. Replayed on the eval, auto answered 10 of 38 questions on the fast
+path with the same judge score as agent-only (0.783 vs 0.789, within judge noise) and cut mean latency
+from 110 s to 88 s. Pick **Agent** or **Fast** in the Mode menu to force one.
+
+**Instant repeats.** The same question on the same commit of a repo is answered from a cache in
+milliseconds, unless the answer could depend on who asks (an ongoing conversation, or memories about
+you for that repo). A sync to a new commit starts fresh, entries expire after a week (issues are live
+data), and a 👎 removes that answer from the cache.
+
 **From your editor**: Claude Code, Cursor, VS Code and other MCP clients can ask BadeBhai directly
 (`ask`, `list_repos`, `add_repo`) or use its raw search tools. Setup: [docs/editors.md](docs/editors.md).
 
@@ -183,7 +196,7 @@ delete what BadeBhai remembers about you.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /ask` | `{"question", "repo", "mode": "agent"\|"naive", "user_id", "thread_id"}` returns the answer, citations, verification report, trace, sub-questions, tool calls, usage |
+| `POST /ask` | `{"question", "repo", "mode": "auto"\|"agent"\|"naive", "user_id", "thread_id"}` returns the answer, citations, verification report, trace, sub-questions, tool calls, usage, `route` (how auto chose) and `cached` |
 | `POST /ask/stream` | the same as server-sent events: `start`, `step`, `tool`, `token`, `final`, `error` |
 | `GET /memories?user_id=&repo=` · `DELETE /memories/{id}?user_id=` · `DELETE /memories?user_id=` | user control over long-term memory |
 | `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` · `DELETE /repos/{name}` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update, remove (index + downloaded copy + memories; `?keep_memories=true`) |
@@ -349,6 +362,8 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 | `MEMORY_IMPORTANCE_THRESHOLD` / `MEMORY_HALF_LIFE_DAYS` | `0.6` / `30` | memory write policy and decay |
 | `SYNC_POLL_INTERVAL_S` | `0` | poll for new commits every N seconds (0 = off) |
 | `AUTO_INGEST_REPO` | (none; compose sets `psf/requests@v2.32.3`) | ingest on startup if missing |
+| `ANSWER_CACHE_TTL_HOURS` | `168` | reuse answers to the same question on the same commit (0 disables) |
+| `RERANKER` / `RERANK_CANDIDATES` / `RERANK_WEIGHT` | (off) / `30` / `0.7` | optional local cross-encoder over the top hybrid-search candidates (see Evaluation) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / (none) | LangSmith traces of every graph node and LLM call; otherwise JSON logs |
 
 Prompts are versioned files in [badebhai/app/prompts](badebhai/app/prompts) (`name.vN.md`); pin one

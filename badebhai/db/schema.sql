@@ -92,3 +92,16 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 
 CREATE INDEX IF NOT EXISTS feedback_repo_idx ON feedback (repo, rating, created_at DESC);
+
+-- Recent answers, reused for the same question on the same commit of a repo (see app/cache.py).
+CREATE TABLE IF NOT EXISTS answer_cache (
+    repo_id     INT  NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    commit      TEXT NOT NULL,
+    mode        TEXT NOT NULL,
+    qkey        TEXT NOT NULL,                      -- sha256 of the normalized question
+    question    TEXT NOT NULL,
+    response    JSONB NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    hits        INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_id, commit, mode, qkey)
+);

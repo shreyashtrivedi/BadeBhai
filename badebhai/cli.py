@@ -132,7 +132,7 @@ def search(
 def ask(
     repo: str,
     question: str,
-    mode: str = typer.Option("agent", help="agent | naive"),
+    mode: str = typer.Option("auto", help="auto (fast path for simple lookups) | agent | naive"),
     user: str = typer.Option("cli-user"),
     thread: str = typer.Option(None),
 ) -> None:

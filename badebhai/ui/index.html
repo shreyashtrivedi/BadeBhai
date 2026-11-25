@@ -24,8 +24,9 @@
       </label>
       <label class="mode">Mode
         <select id="mode">
-          <option value="agent">Agent</option>
-          <option value="naive">Naive RAG</option>
+          <option value="auto" title="Simple lookups take the fast path; everything else gets the full agent">Auto</option>
+          <option value="agent" title="Always plan, search every source and check the evidence">Agent</option>
+          <option value="naive" title="One search, fastest">Fast</option>
         </select>
       </label>
       <button id="new-thread" type="button" title="Start a new conversation thread">New thread</button>

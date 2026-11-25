@@ -178,7 +178,11 @@ def test_conflicting_fact_supersedes_and_duplicates_refresh(indexed):
 
     llm = FakeLLM({"decompose": AUTH_PLAN, "grade": grade_all(), "synthesize": cite_first, "memory": extract})
     with _client(indexed, llm) as c:
-        ask = lambda q: c.post("/ask", json={"question": q, "repo": "tiny", "user_id": "carol"}).json()  # noqa: E731
+
+        def ask(q):
+            body = {"question": q, "repo": "tiny", "mode": "agent", "user_id": "carol"}
+            return c.post("/ask", json=body).json()
+
         ask("I work on the payments team.")
         second = ask("I moved to the auth team last week.")
         third = ask("As I said, I work on the auth team.")
@@ -208,12 +212,18 @@ def test_memory_endpoints_delete_and_scope(indexed):
 
     llm = FakeLLM({"decompose": AUTH_PLAN, "grade": grade_all(), "synthesize": cite_first, "memory": extract})
     with _client(indexed, llm) as c:
-        c.post("/ask", json={"question": "I am a backend engineer", "repo": "tiny", "user_id": "dave"})
+        c.post(
+            "/ask",
+            json={"question": "I am a backend engineer", "repo": "tiny", "mode": "agent", "user_id": "dave"},
+        )
         mid = c.get("/memories", params={"user_id": "dave"}).json()[0]["id"]
         assert c.delete(f"/memories/{mid}", params={"user_id": "mallory"}).status_code == 404
         assert c.delete(f"/memories/{mid}", params={"user_id": "dave"}).json() == {"deleted": mid}
         assert c.get("/memories", params={"user_id": "dave"}).json() == []
-        c.post("/ask", json={"question": "I am a backend engineer", "repo": "tiny", "user_id": "dave"})
+        c.post(
+            "/ask",
+            json={"question": "I am a backend engineer", "repo": "tiny", "mode": "agent", "user_id": "dave"},
+        )
         assert c.delete("/memories", params={"user_id": "dave"}).json() == {"deleted": 1}
 
 
@@ -274,7 +284,9 @@ def test_weak_evidence_retries_then_reports_insufficient(indexed):
 
     llm = FakeLLM({"decompose": graphql_plan, "grade": grade_all(0.1, sufficient=False), "rewrite": rewrite})
     with _client(indexed, llm) as c:
-        body = c.post("/ask", json={"question": "Where is the GraphQL resolver?", "repo": "tiny"}).json()
+        body = c.post(
+            "/ask", json={"question": "Where is the GraphQL resolver?", "repo": "tiny", "mode": "agent"}
+        ).json()
     nodes = [s["node"] for s in body["trace"]]
     assert nodes.count("retrieve") == 3 and nodes.count("rewrite_queries") == 2  # 1 try + max_retries=2
     assert body["sub_questions"][0]["status"] == "insufficient"
@@ -328,7 +340,9 @@ def test_rewrite_follows_leads_and_recovers(indexed, tiny_repo, git):
 
     llm = FakeLLM({"decompose": retry_plan, "grade": grade, "rewrite": rewrite, "synthesize": synth})
     with _client(indexed, llm) as c:
-        body = c.post("/ask", json={"question": "Why exponential backoff?", "repo": "tiny"}).json()
+        body = c.post(
+            "/ask", json={"question": "Why exponential backoff?", "repo": "tiny", "mode": "agent"}
+        ).json()
     assert body["sub_questions"][0]["status"] == "sufficient"
     # plan repair adds the commit search the "commits" source asked for; the rewrite follows with blame
     assert [t["tool"] for t in body["tool_calls"]] == ["search_code", "search_commits", "blame"]
@@ -346,7 +360,7 @@ def test_verifier_catches_bad_citations_in_agent_answers(indexed):
 
     llm = FakeLLM({"decompose": AUTH_PLAN, "grade": grade_all(), "synthesize": synth})
     with _client(indexed, llm) as c:
-        body = c.post("/ask", json={"question": "auth?", "repo": "tiny"}).json()
+        body = c.post("/ask", json={"question": "auth?", "repo": "tiny", "mode": "agent"}).json()
     v = body["verification"]
     assert v["total_citations"] == 2 and v["valid_citations"] == 1
     assert v["invalid_citations"][0]["marker"] == 42
@@ -360,7 +374,11 @@ def test_sse_stream_endpoint(indexed):
     llm = FakeLLM({"decompose": AUTH_PLAN, "grade": grade_all(), "synthesize": cite_first})
     with (
         _client(indexed, llm) as c,
-        c.stream("POST", "/ask/stream", json={"question": "auth?", "repo": "tiny", "user_id": "sse"}) as r,
+        c.stream(
+            "POST",
+            "/ask/stream",
+            json={"question": "auth?", "repo": "tiny", "mode": "agent", "user_id": "sse"},
+        ) as r,
     ):
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
         events = [line[len("event: ") :].strip() for line in r.iter_lines() if line.startswith("event: ")]
@@ -371,7 +389,7 @@ def test_sse_stream_endpoint(indexed):
 def test_sse_reports_errors_as_events(indexed):
     with (
         _client(indexed, FakeLLM({})) as c,
-        c.stream("POST", "/ask/stream", json={"question": "auth?", "repo": "tiny"}) as r,
+        c.stream("POST", "/ask/stream", json={"question": "auth?", "repo": "tiny", "mode": "agent"}) as r,
     ):
         body = "".join(r.iter_text())
     # decompose has no handler -> planning falls back; synthesize has none -> LLMError -> error event
@@ -452,7 +470,9 @@ def test_related_but_incomplete_evidence_is_partial_not_insufficient(indexed):
         }
     )
     with _client(indexed, llm) as c:
-        body = c.post("/ask", json={"question": "Why does auth work this way?", "repo": "tiny"}).json()
+        body = c.post(
+            "/ask", json={"question": "Why does auth work this way?", "repo": "tiny", "mode": "agent"}
+        ).json()
     assert body["sub_questions"][0]["status"] == "partial"
     assert body["insufficient"] == []
     assert (

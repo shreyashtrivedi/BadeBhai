@@ -116,16 +116,30 @@ def test_thread_history_carries_into_follow_up(indexed):
     app = create_app(indexed, llm=llm, toolbox_factory=toolbox_factory(indexed))
     with TestClient(app) as client:
         first = client.post(
-            "/ask", json={"question": "Where is auth handled?", "repo": "tiny", "user_id": "u1"}
+            "/ask",
+            json={"question": "Where is auth handled?", "repo": "tiny", "mode": "agent", "user_id": "u1"},
         )
         tid = first.json()["thread_id"]
         client.post(
             "/ask",
-            json={"question": "And who changed it?", "repo": "tiny", "user_id": "u1", "thread_id": tid},
+            json={
+                "question": "And who changed it?",
+                "repo": "tiny",
+                "mode": "agent",
+                "user_id": "u1",
+                "thread_id": tid,
+            },
         )
         # same thread id but another user must not see u1's history
         client.post(
-            "/ask", json={"question": "Other user", "repo": "tiny", "user_id": "u2", "thread_id": tid}
+            "/ask",
+            json={
+                "question": "Other user",
+                "repo": "tiny",
+                "mode": "agent",
+                "user_id": "u2",
+                "thread_id": tid,
+            },
         )
     assert "Recent conversation" not in seen[0]
     assert "Where is auth handled?" in seen[1]
@@ -148,7 +162,9 @@ def test_rate_limited_github_degrades_gracefully(indexed):
         indexed, llm=llm, toolbox_factory=toolbox_factory(indexed, fake_github(rate_limited=True))
     )
     with TestClient(app) as client:
-        body = client.post("/ask", json={"question": "auth and issues?", "repo": "tiny"}).json()
+        body = client.post(
+            "/ask", json={"question": "auth and issues?", "repo": "tiny", "mode": "agent"}
+        ).json()
     assert any("rate limit" in w for w in body["warnings"])
     assert "rate limit" in llm.calls_for("synthesize")[0].messages[-1]["content"]
     assert body["verification"]["valid_citations"] == 1

@@ -172,6 +172,7 @@ class Hit:
     vector_rank: int | None = None
     keyword_rank: int | None = None
     similarity: float | None = None
+    rerank_score: float | None = None
 
     def to_dict(self, max_chars: int | None = None) -> dict:
         d = asdict(self)
@@ -262,7 +263,12 @@ def hybrid_search(
             )
         )
     hits.sort(key=lambda h: h.score, reverse=True)
-    return _dedupe_overlaps(hits)[:k]
+    hits = _dedupe_overlaps(hits)
+    if s.reranker and len(hits) > 1:
+        from badebhai.retrieval.rerank import get_reranker, rerank
+
+        hits = rerank(query, hits, get_reranker(s.reranker), s.rerank_weight, max(k, s.rerank_candidates))
+    return hits[:k]
 
 
 def _dedupe_overlaps(hits: list[Hit]) -> list[Hit]:

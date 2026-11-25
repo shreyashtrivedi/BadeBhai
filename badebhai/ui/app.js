@@ -73,7 +73,8 @@ async function init() {
   const user = store.get("badebhai.user", null) || `user-${Math.random().toString(36).slice(2, 7)}`;
   $("#user").value = user;
   store.set("badebhai.user", user);
-  $("#mode").value = store.get("badebhai.mode", "agent");
+  $("#mode").value = store.get("badebhai.mode", "auto");
+  if (!$("#mode").value) $("#mode").value = "auto";
   try { state.setup = await api("/setup"); } catch { state.setup = {}; }
   await loadRepos(store.get("badebhai.repo", null));
   loadMemories();
@@ -187,7 +188,9 @@ function renderFinal(holder, r) {
   if (r.memories_used?.length) badges.push(`<span class="badge">${r.memories_used.length} memory fact(s) used</span>`);
   const saved = (r.memories_written || []).filter((m) => ["saved", "superseded"].includes(m.verdict));
   if (saved.length) badges.push(`<span class="badge ok">remembered: ${esc(saved.map((m) => m.text).join("; "))}</span>`);
-  badges.push(`<span class="badge">${r.mode}</span>`);
+  if (r.cached) badges.push(`<span class="badge ok" title="Same question on the same version of the repo${r.cached_at ? ", answered " + esc(timeAgo(r.cached_at)) : ""}">instant: saved answer</span>`);
+  const modeLabel = r.mode === "naive" ? "fast path" : r.mode;
+  badges.push(`<span class="badge"${r.route ? ` title="auto: ${esc(r.route.reason)}"` : ""}>${r.route ? "auto → " : ""}${esc(modeLabel)}</span>`);
   badges.push(`<span class="badge">${(r.latency_ms / 1000).toFixed(1)} s</span>`);
   if (r.usage?.llm_calls) {
     const cost = !r.usage.cost_complete ? " · cost n/a"

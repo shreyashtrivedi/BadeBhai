@@ -235,7 +235,7 @@ class EvalRunner:
             "ref": golden.ref,
             "commit": repo.last_indexed_commit,
             "golden": str(Path(golden_path).name),
-            "models": {"embedding": self.embedder.name}
+            "models": {"embedding": self.embedder.name, "reranker": self.s.reranker or "off"}
             if retrieval_only
             else {
                 "llm": f"{self.s.llm_provider}/{self.s.main_model}",

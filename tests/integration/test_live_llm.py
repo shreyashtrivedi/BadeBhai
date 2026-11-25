@@ -32,7 +32,9 @@ def test_live_agent_cites_the_right_file(live_settings, tiny_repo):
         live_settings, llm=get_llm(live_settings), toolbox_factory=toolbox_factory(live_settings)
     )
     with TestClient(app) as c:
-        body = c.post("/ask", json={"question": "Where is authentication handled?", "repo": "tiny"}).json()
+        body = c.post(
+            "/ask", json={"question": "Where is authentication handled?", "repo": "tiny", "mode": "agent"}
+        ).json()
     assert any(cit["path"] == "app/auth.py" for cit in body["citations"]), body
     v = body["verification"]
     assert v["total_citations"] >= 1 and v["valid_citations"] == v["total_citations"]

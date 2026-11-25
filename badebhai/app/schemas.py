@@ -99,7 +99,7 @@ class TraceStep(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     repo: str
-    mode: Literal["agent", "naive"] = "agent"
+    mode: Literal["auto", "agent", "naive"] = "auto"  # auto: fast path for simple lookups
     user_id: str = "anonymous"
     thread_id: str | None = None
 
@@ -121,3 +121,6 @@ class AskResponse(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    route: dict[str, Any] | None = None  # how auto mode chose: {"mode", "reason"}
+    cached: bool = False
+    cached_at: str | None = None

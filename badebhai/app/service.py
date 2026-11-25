@@ -33,6 +33,10 @@ async def ask_once(
         raise KeyError(f"repo {repo_name!r} is not indexed")
     llm = llm or get_llm(s)
     embedder = get_embedder(s)
+    if mode == "auto":
+        from badebhai.app.router import route
+
+        mode = route(question, follow_up=bool(thread_id)).mode
     with track_usage() as usage:
         if mode == "naive":
             resp = await answer_naive(question, repo, llm=llm, pool=pool, embedder=embedder, settings=s)

@@ -18,12 +18,14 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from badebhai import __version__
+from badebhai.app import cache
 from badebhai.app.agent.checkpoint import postgres_checkpointer
 from badebhai.app.agent.runner import AgentRunner
 from badebhai.app.mcp_client import McpToolbox
 from badebhai.app.memory.store import MemoryStore
 from badebhai.app.naive import answer_naive
 from badebhai.app.onboarding import TOKEN_URL, AddRepoError, check_source, explain_failure
+from badebhai.app.router import route
 from badebhai.app.schemas import AskRequest, AskResponse
 from badebhai.config import Settings, configure_tracing, get_settings
 from badebhai.db import feedback as feedback_db
@@ -351,6 +353,8 @@ def create_app(
     @app.post("/feedback", status_code=201)
     async def add_feedback(request: Request, body: FeedbackRequest) -> dict:
         r = _repo(request, body.repo)
+        if body.rating < 0:  # a thumbs-down answer must not be served again from the cache
+            await asyncio.to_thread(cache.evict, request.app.state.pool, r.id, body.question)
         fid = await asyncio.to_thread(
             feedback_db.add,
             request.app.state.pool,
@@ -396,18 +400,62 @@ def create_app(
         )
         return [h.to_dict(max_chars=800) for h in hits]
 
+    def _resolve_mode(body: AskRequest) -> tuple[AskRequest, dict | None]:
+        if body.mode != "auto":
+            return body, None
+        rt = route(body.question, follow_up=bool(body.thread_id))
+        return body.model_copy(update={"mode": rt.mode}), {"mode": rt.mode, "reason": rt.reason}
+
+    async def _cache_allowed(st, body: AskRequest, repo) -> bool:
+        """Only answers that cannot depend on the asker: no conversation, no memories for this repo."""
+        if body.thread_id or s.answer_cache_ttl_hours <= 0 or not repo.last_indexed_commit:
+            return False
+        return not await asyncio.to_thread(st.memory.list, body.user_id, repo.name)
+
+    async def _from_cache(st, req: AskRequest, repo, rt: dict | None) -> AskResponse | None:
+        t0 = time.perf_counter()
+        hit = await asyncio.to_thread(
+            cache.lookup,
+            st.pool,
+            repo.id,
+            repo.last_indexed_commit,
+            req.mode,
+            req.question,
+            s.answer_cache_ttl_hours,
+        )
+        if hit is None:
+            return None
+        resp = AskResponse.model_validate(hit)
+        resp.cached, resp.thread_id, resp.route = True, None, rt
+        resp.latency_ms = int((time.perf_counter() - t0) * 1000)
+        resp.usage = {"llm_calls": 0, "cost_usd": 0.0, "cost_complete": True, "cached": True}
+        return resp
+
+    async def _remember(st, req: AskRequest, repo, payload: dict) -> None:
+        if cache.cacheable(payload):
+            await asyncio.to_thread(
+                cache.store, st.pool, repo.id, repo.last_indexed_commit, req.mode, req.question, payload
+            )
+
     @app.post("/ask", response_model=AskResponse)
     async def ask(request: Request, body: AskRequest) -> AskResponse:
         repo = _repo(request, body.repo)
         st = request.app.state
+        req, rt = _resolve_mode(body)
+        use_cache = await _cache_allowed(st, req, repo)
+        if use_cache and (hit := await _from_cache(st, req, repo, rt)):
+            return hit
         with track_usage() as usage:
-            if body.mode == "naive":
+            if req.mode == "naive":
                 resp = await answer_naive(
-                    body.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
+                    req.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
                 )
             else:
-                resp = await st.runner.ask(body, repo)
+                resp = await st.runner.ask(req, repo)
         resp.usage = usage.summary()
+        resp.route = rt
+        if use_cache:
+            await _remember(st, req, repo, resp.model_dump())
         return resp
 
     @app.post("/ask/stream")
@@ -416,22 +464,44 @@ def create_app(
         repo = _repo(request, body.repo)
         st = request.app.state
 
+        def final(resp: AskResponse) -> dict:
+            return {
+                "event": "final",
+                "data": json.dumps({"type": "final", "response": resp.model_dump()}, default=str),
+            }
+
         async def events():
+            req, rt = _resolve_mode(body)
             with track_usage() as usage:
                 try:
-                    if body.mode == "naive":
-                        resp = await answer_naive(
-                            body.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
-                        )
-                        resp.usage = usage.summary()
-                        yield {
-                            "event": "final",
-                            "data": json.dumps({"type": "final", "response": resp.model_dump()}),
+                    if rt:
+                        label = "fast path" if req.mode == "naive" else "agent"
+                        step = {
+                            "type": "step",
+                            "node": "route",
+                            "summary": f"{label}: {rt['reason']}",
+                            "ms": 0,
                         }
+                        yield {"event": "step", "data": json.dumps(step)}
+                    use_cache = await _cache_allowed(st, req, repo)
+                    if use_cache and (hit := await _from_cache(st, req, repo, rt)):
+                        yield final(hit)
                         return
-                    async for ev in st.runner.stream(body, repo):
+                    if req.mode == "naive":
+                        resp = await answer_naive(
+                            req.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
+                        )
+                        resp.usage, resp.route = usage.summary(), rt
+                        if use_cache:
+                            await _remember(st, req, repo, resp.model_dump())
+                        yield final(resp)
+                        return
+                    async for ev in st.runner.stream(req, repo):
                         if ev["type"] == "final":
                             ev["response"]["usage"] = usage.summary()
+                            ev["response"]["route"] = rt
+                            if use_cache:
+                                await _remember(st, req, repo, ev["response"])
                         yield {"event": ev["type"], "data": json.dumps(ev, default=str)}
                 except LLMUnavailable as e:
                     yield {"event": "error", "data": json.dumps({"error": str(e), "status": 503})}

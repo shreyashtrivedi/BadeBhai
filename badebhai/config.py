@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     retrieval_candidates: int = 40  # per-arm candidates before fusion
     rrf_k: int = 60
     test_path_penalty: float = 0.85  # multiply fused score of test files (1.0 disables)
+    # Optional local cross-encoder that reorders the top candidates (e.g. BAAI/bge-reranker-base).
+    reranker: str | None = None
+    rerank_candidates: int = 30
+    rerank_weight: float = 0.7  # blend with the fused rank (1.0 = reranker only)
+    # Reuse an answer to the same question on the same commit (0 disables). See app/cache.py.
+    answer_cache_ttl_hours: int = 168
 
     # --- MCP ---
     mcp_transport: str = "http"  # http | stdio | inmemory

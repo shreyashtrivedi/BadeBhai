@@ -85,5 +85,6 @@ def write(report: dict[str, Any], out_dir: Path = REPORTS_DIR) -> tuple[Path, Pa
     md = out_dir / f"{report['run_id']}.md"
     text = markdown(report)
     md.write_text(text, encoding="utf-8")
-    (out_dir / "latest.md").write_text(text, encoding="utf-8")
+    if set(report.get("summary", {})) != {"retrieval"}:  # retrieval-only experiments keep latest.md as is
+        (out_dir / "latest.md").write_text(text, encoding="utf-8")
     return raw, md
