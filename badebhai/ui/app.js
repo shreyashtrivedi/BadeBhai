@@ -9,7 +9,7 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
 };
 
-const state = { citations: [], busy: false, traceEl: null, repos: [], setup: {}, watching: null };
+const state = { citations: [], busy: false, traceEl: null, repos: [], setup: {}, watching: null, me: { auth_enabled: false, user: null } };
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -64,13 +64,26 @@ function renderMarkdown(md, citations) {
 // ---------------------------------------------------------------- setup
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
-  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.error || b.detail || r.statusText); }
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    if (r.status === 401 && b.auth_required) showLogin();
+    throw new Error(b.error || b.detail || r.statusText);
+  }
   return r.json();
 }
 function threadKey() { return `badebhai.thread.${$("#repo").value}.${$("#user").value}`; }
 
 async function init() {
-  const user = store.get("badebhai.user", null) || `user-${Math.random().toString(36).slice(2, 7)}`;
+  try { state.me = await api("/auth/me"); } catch { state.me = { auth_enabled: false, user: null }; }
+  initLogin();
+  if (state.me.auth_enabled && !state.me.user) { showLogin(); return; }
+  if (state.me.user) {
+    $("#user").value = state.me.user.username;
+    $("#user-label").hidden = true;
+    $("#whoami").hidden = false;
+    $("#whoami-name").textContent = `${state.me.user.username}${state.me.user.role === "admin" ? " (admin)" : ""}`;
+  }
+  const user = state.me.user?.username || store.get("badebhai.user", null) || `user-${Math.random().toString(36).slice(2, 7)}`;
   $("#user").value = user;
   store.set("badebhai.user", user);
   $("#mode").value = store.get("badebhai.mode", "auto");
@@ -337,10 +350,14 @@ function renderRepoList() {
     const status = r.last_indexed_commit ? `updated ${timeAgo(r.last_indexed_at)}` : "being added…";
     const canUpdate = r.last_indexed_commit && r.kind !== "local" && r.name.split("/").length === 2;
     const link = r.github ? `<a href="https://github.com/${esc(r.github)}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>` : esc(r.name);
-    return `<li><div><div class="name">${link}${r.ref ? ` <span class="muted">@ ${esc(r.ref)}</span>` : ""}</div><div class="muted small">${status}</div></div>
+    const isAdmin = state.me.user?.role === "admin";
+    const sharing = state.me.auth_enabled ? ` · ${r.shared ? "shared with everyone" : "private"}` : "";
+    const shareBtn = isAdmin && r.last_indexed_commit ? `<button type="button" class="link" data-share="${esc(r.name)}" data-to="${r.shared ? "false" : "true"}">${r.shared ? "Make private" : "Share with everyone"}</button>` : "";
+    return `<li><div><div class="name">${link}${r.ref ? ` <span class="muted">@ ${esc(r.ref)}</span>` : ""}</div><div class="muted small">${status}${sharing}</div></div>
       <div class="actions">
         ${r.last_indexed_commit ? `<button type="button" class="link" data-ask="${esc(r.name)}">Ask</button>` : ""}
         ${canUpdate ? `<button type="button" class="link" data-update="${esc(r.name)}" title="Download new commits and re-read changed files">Check for updates</button>` : ""}
+        ${shareBtn}
         ${r.last_indexed_commit ? `<button type="button" class="link danger" data-remove="${esc(r.name)}" title="Remove from BadeBhai">Remove</button>` : ""}
       </div></li>`;
   }).join("");
@@ -360,6 +377,8 @@ function initAddRepo() {
     if (ask) useRepo(ask.dataset.ask);
     if (upd) updateRepo(upd.dataset.update);
     if (rm) removeRepo(rm.dataset.remove);
+    const sh = e.target.closest("[data-share]");
+    if (sh) shareRepo(sh.dataset.share, sh.dataset.to === "true");
   });
   $("#add-progress").addEventListener("click", (e) => {
     const ask = e.target.closest("[data-ask]"), upd = e.target.closest("[data-update]");
@@ -430,6 +449,13 @@ async function addRepo() {
       return;
     }
     if (!r.ok) { showAddError(b.error || b.detail || r.statusText, b.needs_token, b.details); return; }
+    if (b.added_to_your_list) {
+      $("#add-source").value = "";
+      await loadRepos();
+      out.innerHTML = `<div class="job done"><div class="ok-line">✓ ${esc(b.message)}</div>
+        <div class="job-actions"><button type="button" class="primary" data-ask="${esc(b.repo)}">Start asking</button></div></div>`;
+      return;
+    }
     $("#add-source").value = "";
     await loadRepos($("#repo").value || b.repo);
     watchJob(b.job_id, b.repo, "ingest", true, b.about, b.warnings);
@@ -534,13 +560,50 @@ function renderJob(job, repo, kind, about, warnings, samples) {
     <ol class="stages">${steps}</ol>${body}${warn}</div>`;
 }
 
+// ---------------------------------------------------------------- accounts (only when AUTH_ENABLED)
+function initLogin() {
+  const dlg = $("#login-dialog");
+  dlg.addEventListener("cancel", (e) => e.preventDefault());  // signing in is required
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#login-error").textContent = "";
+    $("#login-submit").disabled = true;
+    try {
+      const r = await fetch("/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: $("#login-user").value.trim(), password: $("#login-pass").value }) });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) { $("#login-error").textContent = b.error || "Sign-in failed."; return; }
+      location.reload();
+    } catch (err) { $("#login-error").textContent = `Couldn't reach BadeBhai: ${err.message}`; }
+    finally { $("#login-submit").disabled = false; }
+  });
+  $("#sign-out").addEventListener("click", async () => {
+    await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+    location.reload();
+  });
+}
+function showLogin() {
+  const dlg = $("#login-dialog");
+  if (!dlg.open) dlg.showModal();
+  $("#login-user").focus();
+}
+async function shareRepo(name, shared) {
+  try {
+    const path = name.split("/").map(encodeURIComponent).join("/");
+    await api(`/repos/${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shared }) });
+    await loadRepos();
+    setStatus(shared ? `${name} is now shared with everyone.` : `${name} is now private to its members.`);
+  } catch (e) { setStatus(e.message, true); }
+}
+
 // ---------------------------------------------------------------- remove a repository
 async function removeRepo(name) {
   if (!confirm(`Remove ${name} from BadeBhai?\n\nThis deletes its index, its downloaded copy, and what BadeBhai remembers about it. The repository itself is not touched, and you can add it again any time.`)) return;
   try {
     const path = name.split("/").map(encodeURIComponent).join("/");
-    await api(`/repos/${path}`, { method: "DELETE" });
+    const res = await api(`/repos/${path}`, { method: "DELETE" });
     if ($("#repo").value === name) store.del("badebhai.repo");
+    if (res.removed_from_your_list) { await loadRepos(); setStatus(`Removed ${name} from your list.`); return; }
     await loadRepos();
     loadMemories();
     setStatus(`Removed ${name}.`);

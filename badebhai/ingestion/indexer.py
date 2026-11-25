@@ -121,6 +121,7 @@ class Indexer:
         name: str | None = None,
         progress: Progress | None = None,
         allow_local: bool = True,
+        owner: str | None = None,
     ) -> IndexReport:
         progress = progress or _no_progress
         token = self.settings.github_token
@@ -130,7 +131,7 @@ class Indexer:
         wiki = None
         if self.settings.index_wiki and src.github_full_name and src.managed:
             wiki = ensure_wiki_clone(src.github_full_name, self.settings.repos_dir, token=token)
-        repo = repo_db.upsert_repo(self.pool, src, wiki)
+        repo = repo_db.upsert_repo(self.pool, src, wiki, owner=owner)
         return self.reindex(repo, candidates=None, mode="full", progress=progress)
 
     def sync(

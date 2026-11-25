@@ -288,6 +288,90 @@ def memories_clear(user: str = typer.Option(..., help="user id"), repo: str = ty
     typer.echo(f"deleted {_memory_store().delete_all(user, repo)}")
 
 
+users_app = typer.Typer(help="Accounts for shared deployments (AUTH_ENABLED=true).", no_args_is_help=True)
+app.add_typer(users_app, name="users")
+
+
+def _pool():
+    from badebhai.db.pool import get_pool
+
+    return get_pool()
+
+
+@users_app.command("add")
+def users_add(
+    username: str,
+    admin: bool = typer.Option(False, "--admin", help="can add shared repos, see feedback, manage sharing"),
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+) -> None:
+    """Create an account."""
+    _init()
+    from badebhai.app import auth
+
+    try:
+        user = auth.create_user(_pool(), username, password, "admin" if admin else "member")
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from None
+    except Exception as e:  # unique violation
+        typer.echo(f"could not create {username}: {e}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"created {user.role} {user.username}")
+
+
+@users_app.command("list")
+def users_list() -> None:
+    """List accounts."""
+    _init()
+    from badebhai.app import auth
+
+    for u in auth.list_users(_pool()):
+        flags = ", ".join(f for f, on in (("disabled", u["disabled"]), ("api key", u["has_api_key"])) if on)
+        typer.echo(f"{u['username']:20s} {u['role']:7s} {flags}")
+
+
+@users_app.command("passwd")
+def users_passwd(
+    username: str, password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True)
+) -> None:
+    """Set a new password."""
+    _init()
+    from badebhai.app import auth
+
+    try:
+        auth.set_password(_pool(), username, password)
+    except (KeyError, ValueError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo("password changed")
+
+
+@users_app.command("api-key")
+def users_api_key(username: str) -> None:
+    """Create (or replace) a user's API key for scripts and the MCP assistant. Shown once."""
+    _init()
+    from badebhai.app import auth
+
+    try:
+        key = auth.set_api_key(_pool(), username)
+    except KeyError:
+        typer.echo(f"no user {username}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(key)
+    typer.echo("Store it now: it is not shown again. Send it as `Authorization: Bearer <key>`.", err=True)
+
+
+@users_app.command("remove")
+def users_remove(username: str, yes: bool = typer.Option(False, "--yes")) -> None:
+    """Delete an account (their memories stay until you clear them)."""
+    _init()
+    if not yes and not typer.confirm(f"Delete user {username}?"):
+        raise typer.Abort()
+    from badebhai.app import auth
+
+    typer.echo("deleted" if auth.delete_user(_pool(), username) else "not found")
+
+
 feedback_app = typer.Typer(help="Thumbs up/down left on answers in the web UI.", no_args_is_help=True)
 app.add_typer(feedback_app, name="feedback")
 

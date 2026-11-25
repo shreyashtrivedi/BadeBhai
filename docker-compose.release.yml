@@ -1,0 +1,21 @@
+# Run a published BadeBhai image instead of building one (no Python toolchain or build time):
+#
+#   BADEBHAI_IMAGE=ghcr.io/<owner>/badebhai:latest \
+#     docker compose -f docker-compose.yml -f docker-compose.release.yml up -d
+#
+# Add `-f docker-compose.gpu.yml` for an NVIDIA GPU. Images are published by
+# .github/workflows/docker-publish.yml when a version tag is pushed.
+x-image: &image
+  image: ${BADEBHAI_IMAGE:?set BADEBHAI_IMAGE, e.g. ghcr.io/owner/badebhai:latest}
+  pull_policy: missing
+
+services:
+  api:
+    <<: *image
+    build: !reset null
+  mcp-code:
+    <<: *image
+  mcp-git:
+    <<: *image
+  mcp-docs:
+    <<: *image

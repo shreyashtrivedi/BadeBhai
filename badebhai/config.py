@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     api_allow_local_paths: bool = False
     api_max_repo_mb: int = 2048  # refuse bigger GitHub repos from the web UI (GitHub-reported size)
 
+    # --- accounts for shared deployments (off = single-user local tool; see app/auth.py) ---
+    auth_enabled: bool = False
+    session_secret: str | None = None  # random per start if unset (everyone signs in again on restart)
+    session_max_age_hours: int = 24 * 14
+    cookie_secure: bool = False  # set true behind HTTPS
+    asks_per_hour: int = 60  # per member; 0 = unlimited; admins are never limited
+    repo_adds_per_day: int = 10
+    max_private_repos_per_user: int = 10
+
     # --- agent guardrails ---
     max_subquestions: int = 5
     max_retries: int = 2  # query-rewrite retries per sub-question

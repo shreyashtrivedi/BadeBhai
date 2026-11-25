@@ -25,6 +25,7 @@ class RepoRecord:
     last_indexed_commit: str | None
     last_indexed_at: datetime | None
     embedding_model: str | None
+    shared: bool = True  # visible to every user (only matters with AUTH_ENABLED)
 
     @property
     def managed(self) -> bool:
@@ -58,12 +59,13 @@ class RepoRecord:
             "last_indexed_commit": self.last_indexed_commit,
             "last_indexed_at": self.last_indexed_at.isoformat() if self.last_indexed_at else None,
             "embedding_model": self.embedding_model,
+            "shared": self.shared,
         }
 
 
 _COLS = (
     "id, name, kind, source, local_path, ref, github_full_name, wiki_path, last_indexed_commit, "
-    "last_indexed_at, embedding_model"
+    "last_indexed_at, embedding_model, shared"
 )
 
 
@@ -92,12 +94,16 @@ def list_repos(pool: ConnectionPool) -> list[RepoRecord]:
         return [RepoRecord(**r) for r in cur.fetchall()]
 
 
-def upsert_repo(pool: ConnectionPool, src: RepoSource, wiki_path: Path | None) -> RepoRecord:
+def upsert_repo(
+    pool: ConnectionPool, src: RepoSource, wiki_path: Path | None, owner: str | None = None
+) -> RepoRecord:
+    """Insert or update a repo. With an `owner` (a signed-in member adding it), a new repo starts
+    private to that member; an existing one keeps its sharing and gains the member."""
     with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            INSERT INTO repos (name, kind, source, local_path, ref, github_full_name, wiki_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO repos (name, kind, source, local_path, ref, github_full_name, wiki_path, shared)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (name) DO UPDATE SET kind = EXCLUDED.kind, source = EXCLUDED.source,
                 local_path = EXCLUDED.local_path, ref = EXCLUDED.ref,
                 github_full_name = EXCLUDED.github_full_name,
@@ -112,9 +118,16 @@ def upsert_repo(pool: ConnectionPool, src: RepoSource, wiki_path: Path | None) -
                 src.ref,
                 src.github_full_name,
                 str(wiki_path) if wiki_path else None,
+                owner is None,
             ),
         )
-        return _rec(cur.fetchone())
+        rec = _rec(cur.fetchone())
+        if owner:
+            cur.execute(
+                "INSERT INTO repo_members (repo_id, username) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (rec.id, owner),
+            )
+        return rec
 
 
 def mark_indexed(pool: ConnectionPool, repo_id: int, commit: str | None, embedding_model: str) -> None:
@@ -156,3 +169,57 @@ def remove_repo(
         conn.execute("DELETE FROM chunks WHERE repo_id = %s", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = %s", (repo_id,))
     return {"files": int(files), "memories": int(mems)}
+
+
+# ------------------------------------------------------------------ visibility (AUTH_ENABLED only)
+def list_visible_repos(pool: ConnectionPool, username: str) -> list[RepoRecord]:
+    with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"SELECT {_COLS} FROM repos WHERE shared OR id IN "
+            "(SELECT repo_id FROM repo_members WHERE username = %s) ORDER BY name",
+            (username,),
+        )
+        return [RepoRecord(**r) for r in cur.fetchall()]
+
+
+def is_member(pool: ConnectionPool, repo_id: int, username: str) -> bool:
+    with pool.connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM repo_members WHERE repo_id = %s AND username = %s", (repo_id, username)
+            ).fetchone()
+            is not None
+        )
+
+
+def add_member(pool: ConnectionPool, repo_id: int, username: str) -> None:
+    with pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO repo_members (repo_id, username) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (repo_id, username),
+        )
+
+
+def remove_member(pool: ConnectionPool, repo_id: int, username: str) -> int:
+    """Drop a member; returns how many members remain."""
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM repo_members WHERE repo_id = %s AND username = %s", (repo_id, username))
+        return int(
+            conn.execute("SELECT count(*) FROM repo_members WHERE repo_id = %s", (repo_id,)).fetchone()[0]
+        )
+
+
+def count_owned(pool: ConnectionPool, username: str) -> int:
+    with pool.connection() as conn:
+        return int(
+            conn.execute(
+                "SELECT count(*) FROM repo_members m JOIN repos r ON r.id = m.repo_id "
+                "WHERE m.username = %s AND NOT r.shared",
+                (username,),
+            ).fetchone()[0]
+        )
+
+
+def set_shared(pool: ConnectionPool, repo_id: int, shared: bool) -> None:
+    with pool.connection() as conn:
+        conn.execute("UPDATE repos SET shared = %s WHERE id = %s", (shared, repo_id))

@@ -33,7 +33,7 @@ BadeBhai: The retry logic was added to enable automatic retries for failed HTTP 
 ## Contents
 [Quick start](#quick-start) · [Completely free](#completely-free) · [Architecture](#architecture) ·
 [Using it](#using-it) · [How it works](#how-it-works) · [Evaluation](#evaluation) ·
-[Configuration](#configuration) · [Development](#development) ·
+[Sharing it with a team](#sharing-it-with-a-team) · [Configuration](#configuration) · [Development](#development) ·
 [Limitations and next steps](#limitations-and-next-steps)
 
 ## Quick start
@@ -340,6 +340,41 @@ Earlier retrieval-only work:
   ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
   [after](badebhai/evals/reports/20261124-230610.md)).
 
+## Sharing it with a team
+
+Out of the box BadeBhai is a single-user tool on your machine. To let other people use your copy:
+
+```bash
+# .env
+AUTH_ENABLED=true
+SESSION_SECRET=<a long random string>   # python -c "import secrets; print(secrets.token_urlsafe(32))"
+COOKIE_SECURE=true                      # when it is served over HTTPS (recommended)
+
+uv run badebhai users add you --admin   # or: docker compose exec api badebhai users add you --admin
+uv run badebhai users add teammate
+```
+
+* Everyone signs in; the web page shows a sign-in screen. Scripts and the editor assistant use an API
+  key instead: `badebhai users api-key <name>` (shown once), sent as `Authorization: Bearer <key>`.
+* **Per-user repos.** Repos an admin adds (or that were there before) are shared with everyone. A
+  member's own additions are private to them; if someone else adds the same repo it simply joins their
+  list too (no second download). Admins can share or unshare any repo; members can only remove
+  their own private ones.
+* **Private memories.** What BadeBhai remembers belongs to the signed-in user, whatever the page sends.
+* **Usage limits** for members (admins are never limited): `ASKS_PER_HOUR` (60),
+  `REPO_ADDS_PER_DAY` (10), `MAX_PRIVATE_REPOS_PER_USER` (10). Sign-in attempts are throttled.
+* Keep the API behind HTTPS (a reverse proxy such as Caddy or nginx). The MCP servers are published
+  on `127.0.0.1` only, so they are not reachable from other machines.
+
+**Ready-made image.** Pushing a version tag (`git tag v0.2.0 && git push origin v0.2.0`) publishes the
+image to GitHub Container Registry ([workflow](.github/workflows/docker-publish.yml)). Anyone can then
+run it without building:
+
+```bash
+BADEBHAI_IMAGE=ghcr.io/<owner>/badebhai:latest \
+  docker compose -f docker-compose.yml -f docker-compose.release.yml up -d
+```
+
 ## Configuration
 
 All settings come from environment variables or `.env` ([.env.example](.env.example)). The main ones:
@@ -373,7 +408,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 132 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 161 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

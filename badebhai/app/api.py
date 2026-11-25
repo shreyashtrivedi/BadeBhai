@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 import uuid
 from collections.abc import Callable
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from badebhai import __version__
-from badebhai.app import cache
+from badebhai.app import auth, cache
 from badebhai.app.agent.checkpoint import postgres_checkpointer
 from badebhai.app.agent.runner import AgentRunner
 from badebhai.app.mcp_client import McpToolbox
@@ -49,6 +50,26 @@ class IngestRequest(BaseModel):
     source: str
     ref: str | None = None
     name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class ShareRequest(BaseModel):
+    shared: bool
+
+
+_PUBLIC_PATHS = ("/health", "/auth/login", "/auth/logout", "/auth/me", "/webhooks/", "/integrations/")
+
+
+def _is_public(path: str) -> bool:
+    return (
+        path == "/"
+        or path.startswith("/ui")
+        or any(path == p or (p.endswith("/") and path.startswith(p)) for p in _PUBLIC_PATHS)
+    )
 
 
 class FeedbackRequest(BaseModel):
@@ -88,6 +109,13 @@ def create_app(
         await asyncio.to_thread(st.embedder.embed_query, "warm up")
         st.llm = llm or get_llm(s)
         st.jobs = {}
+        st.limiter = auth.UsageLimiter()
+        st.session_secret = s.session_secret or secrets.token_urlsafe(32)
+        if s.auth_enabled:
+            if not s.session_secret:
+                log.warning("SESSION_SECRET is not set: sign-ins last until the API restarts")
+            if await asyncio.to_thread(auth.count_users, st.pool) == 0:
+                log.warning("AUTH_ENABLED but no users yet: run `badebhai users add <name> --admin`")
         st.github = github or GitHubClient(
             s.github_token, s.github_api_url, s.github_cache_ttl_s, timeout_s=8.0
         )
@@ -145,11 +173,62 @@ def create_app(
             status_code=504, content={"error": "the question took too long to answer; try narrowing it"}
         )
 
+    @app.middleware("http")
+    async def require_sign_in(request: Request, call_next):
+        request.state.user = None
+        if not s.auth_enabled:
+            return await call_next(request)
+        request.state.user = await asyncio.to_thread(_identify, request)
+        if request.state.user is None and not _is_public(request.url.path):
+            return JSONResponse(status_code=401, content={"error": "Please sign in.", "auth_required": True})
+        return await call_next(request)
+
+    def _identify(request: Request) -> auth.User | None:
+        pool = request.app.state.pool
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            return auth.user_by_api_key(pool, header[7:].strip())
+        name = auth.read_session(
+            request.cookies.get(auth.SESSION_COOKIE),
+            request.app.state.session_secret,
+            s.session_max_age_hours * 3600,
+        )
+        return auth.get_user(pool, name) if name else None
+
+    def _user(request: Request) -> auth.User | None:
+        return getattr(request.state, "user", None)
+
+    def _uid(request: Request, supplied: str | None) -> str:
+        """With accounts, memories and feedback always belong to the signed-in user."""
+        user = _user(request)
+        return user.username if user else (supplied or "anonymous")
+
+    def _limit(request: Request, action: str, limit: int, window_s: int, what: str) -> None:
+        user = _user(request)
+        if user is None or user.is_admin:
+            return
+        wait = request.app.state.limiter.check(user.username, action, limit, window_s)
+        if wait is not None:
+            mins = max(1, round(wait / 60))
+            raise HTTPException(
+                429, f"You've reached the limit of {limit} {what}. Try again in about {mins} min."
+            )
+
+    def _can_see(request: Request, repo: repo_db.RepoRecord) -> bool:
+        user = _user(request)
+        if user is None or user.is_admin or repo.shared:
+            return True
+        return repo_db.is_member(request.app.state.pool, repo.id, user.username)
+
     def _repo(request: Request, name: str) -> repo_db.RepoRecord:
         repo = repo_db.get_repo(request.app.state.pool, name)
-        if repo is None:
+        if repo is None or not _can_see(request, repo):
             raise HTTPException(404, f"repo {name!r} is not indexed; POST /repos to ingest it")
         return repo
+
+    @app.exception_handler(HTTPException)
+    async def _http_error(_: Request, exc: HTTPException):  # one error shape for the UI: {"error": ...}
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.detail, "detail": exc.detail})
 
     def _start_job(
         app: FastAPI,
@@ -228,6 +307,39 @@ def create_app(
                 ],
             }
 
+    @app.post("/auth/login")
+    async def login(request: Request, body: LoginRequest) -> JSONResponse:
+        ip = request.client.host if request.client else "?"
+        wait = request.app.state.limiter.check(f"{body.username}@{ip}", "login", 10, 900)
+        if wait is not None:
+            raise HTTPException(429, "Too many sign-in attempts. Wait a few minutes and try again.")
+        user = await asyncio.to_thread(
+            auth.authenticate, request.app.state.pool, body.username, body.password
+        )
+        if user is None:
+            raise HTTPException(401, "Wrong username or password.")
+        resp = JSONResponse({"user": user.to_public()})
+        resp.set_cookie(
+            auth.SESSION_COOKIE,
+            auth.sign_session(user.username, request.app.state.session_secret),
+            max_age=s.session_max_age_hours * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=s.cookie_secure,
+        )
+        return resp
+
+    @app.post("/auth/logout")
+    async def logout() -> JSONResponse:
+        resp = JSONResponse({"signed_out": True})
+        resp.delete_cookie(auth.SESSION_COOKIE)
+        return resp
+
+    @app.get("/auth/me")
+    async def me(request: Request) -> dict:
+        user = _user(request)
+        return {"auth_enabled": s.auth_enabled, "user": user.to_public() if user else None}
+
     @app.get("/setup")
     async def setup() -> dict[str, Any]:
         """What the web UI needs to guide someone adding a repo. Never includes the token itself."""
@@ -240,8 +352,22 @@ def create_app(
 
     @app.get("/repos")
     async def list_repos(request: Request) -> list[dict]:
-        repos = await asyncio.to_thread(repo_db.list_repos, request.app.state.pool)
+        user, pool = _user(request), request.app.state.pool
+        if user is None or user.is_admin:
+            repos = await asyncio.to_thread(repo_db.list_repos, pool)
+        else:
+            repos = await asyncio.to_thread(repo_db.list_visible_repos, pool, user.username)
         return [r.to_public() for r in repos]
+
+    @app.patch("/repos/{name:path}")
+    async def share_repo(request: Request, name: str, body: ShareRequest) -> dict:
+        """Admins: make a repo visible to everyone (shared) or only to its members."""
+        user = _user(request)
+        if user is not None and not user.is_admin:
+            raise HTTPException(403, "Only an admin can change who sees a repository.")
+        repo = _repo(request, name)
+        await asyncio.to_thread(repo_db.set_shared, request.app.state.pool, repo.id, body.shared)
+        return {"repo": repo.name, "shared": body.shared}
 
     def _running_job(app: FastAPI, repo: str) -> dict | None:
         return next(
@@ -259,12 +385,34 @@ def create_app(
         except AddRepoError as e:
             return JSONResponse(status_code=e.status, content=e.to_dict())
         name = body.name or checked.repo.name
+        user = _user(request)
+        owner = user.username if user and not user.is_admin else None
         if job := _running_job(request.app, name):
             return JSONResponse(
                 status_code=202,
                 content={"job_id": job["id"], "status": "running", "repo": name, "already_running": True},
             )
         existing = await asyncio.to_thread(repo_db.get_repo, st.pool, name)
+        if existing is not None and owner and not await asyncio.to_thread(_can_see, request, existing):
+            await asyncio.to_thread(
+                repo_db.add_member, st.pool, existing.id, owner
+            )  # already indexed: share it
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "repo": name,
+                    "status": "done",
+                    "added_to_your_list": True,
+                    "message": f"{name} was already indexed, so it was added to your list right away.",
+                },
+            )
+        if owner:
+            _limit(request, "add", s.repo_adds_per_day, 86400, "repositories added per day")
+            if await asyncio.to_thread(repo_db.count_owned, st.pool, owner) >= s.max_private_repos_per_user:
+                raise HTTPException(
+                    403,
+                    f"You can have up to {s.max_private_repos_per_user} repositories. Remove one first.",
+                )
         if existing is not None and existing.last_indexed_commit and checked.repo.ref in (None, existing.ref):
             return JSONResponse(
                 status_code=409,
@@ -280,7 +428,7 @@ def create_app(
             request.app,
             "ingest",
             lambda p: st.indexer.ingest(
-                checked.source, name=body.name, progress=p, allow_local=s.api_allow_local_paths
+                checked.source, name=body.name, progress=p, allow_local=s.api_allow_local_paths, owner=owner
             ),
             explain=lambda e: explain_failure(e, has_token, kind),
             source=checked.source,
@@ -320,9 +468,18 @@ def create_app(
     async def remove_repo(request: Request, name: str, keep_memories: bool = False) -> dict:
         """Remove a repo: its index, its downloaded copy (never a local folder you pointed at), and,
         unless keep_memories, what users told BadeBhai about it."""
-        _repo(request, name)
+        repo = _repo(request, name)
         if _running_job(request.app, name):
             raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
+        user = _user(request)
+        if user is not None and not user.is_admin:
+            if repo.shared:
+                raise HTTPException(403, "Only an admin can remove a repository that everyone shares.")
+            left = await asyncio.to_thread(
+                repo_db.remove_member, request.app.state.pool, repo.id, user.username
+            )
+            if left:
+                return {"repo": name, "removed_from_your_list": True}
         return await asyncio.to_thread(request.app.state.indexer.remove, name, not keep_memories)
 
     @app.get("/file")
@@ -358,7 +515,7 @@ def create_app(
         fid = await asyncio.to_thread(
             feedback_db.add,
             request.app.state.pool,
-            user_id=body.user_id,
+            user_id=_uid(request, body.user_id),
             repo=r.name,
             commit=r.last_indexed_commit,
             question=body.question,
@@ -375,6 +532,9 @@ def create_app(
     async def list_feedback(
         request: Request, repo: str | None = None, rating: int | None = None, limit: int = 100
     ) -> dict:
+        user = _user(request)
+        if user is not None and not user.is_admin:
+            raise HTTPException(403, "Only an admin can read everyone's feedback.")
         pool = request.app.state.pool
         rows = await asyncio.to_thread(feedback_db.list_feedback, pool, repo, rating, min(limit, 500))
         totals = await asyncio.to_thread(feedback_db.summary, pool, repo)
@@ -437,8 +597,13 @@ def create_app(
                 cache.store, st.pool, repo.id, repo.last_indexed_commit, req.mode, req.question, payload
             )
 
+    def _ask_guard(request: Request, body: AskRequest) -> AskRequest:
+        _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
+        return body.model_copy(update={"user_id": _uid(request, body.user_id)})
+
     @app.post("/ask", response_model=AskResponse)
     async def ask(request: Request, body: AskRequest) -> AskResponse:
+        body = _ask_guard(request, body)
         repo = _repo(request, body.repo)
         st = request.app.state
         req, rt = _resolve_mode(body)
@@ -461,6 +626,7 @@ def create_app(
     @app.post("/ask/stream")
     async def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
         """Server-sent events: start, step, tool, token ... then final (or error)."""
+        body = _ask_guard(request, body)
         repo = _repo(request, body.repo)
         st = request.app.state
 
@@ -518,20 +684,24 @@ def create_app(
     # ------------------------------------------------------------------ memories (user control)
     @app.get("/memories")
     async def list_memories(
-        request: Request, user_id: str, repo: str | None = None, include_inactive: bool = False
+        request: Request, user_id: str = "anonymous", repo: str | None = None, include_inactive: bool = False
     ) -> list[dict]:
+        user_id = _uid(request, user_id)
         mems = await asyncio.to_thread(request.app.state.memory.list, user_id, repo, include_inactive)
         return [m.to_public() for m in mems]
 
     @app.delete("/memories/{memory_id}")
-    async def delete_memory(request: Request, memory_id: int, user_id: str) -> dict:
+    async def delete_memory(request: Request, memory_id: int, user_id: str = "anonymous") -> dict:
+        user_id = _uid(request, user_id)
         if not await asyncio.to_thread(request.app.state.memory.delete, user_id, memory_id):
             raise HTTPException(404, "memory not found for this user")
         return {"deleted": memory_id}
 
     @app.delete("/memories")
-    async def delete_all_memories(request: Request, user_id: str, repo: str | None = None) -> dict:
-        n = await asyncio.to_thread(request.app.state.memory.delete_all, user_id, repo)
+    async def delete_all_memories(
+        request: Request, user_id: str = "anonymous", repo: str | None = None
+    ) -> dict:
+        n = await asyncio.to_thread(request.app.state.memory.delete_all, _uid(request, user_id), repo)
         return {"deleted": n}
 
     @app.post("/webhooks/github", status_code=202)

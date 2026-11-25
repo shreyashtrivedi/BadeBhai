@@ -19,9 +19,11 @@
         <select id="repo"></select>
       </label>
       <button id="add-repo" type="button" class="primary-soft" title="Add any GitHub repository">+ Add repo</button>
-      <label>User
+      <label id="user-label">User
         <input id="user" type="text" spellcheck="false" autocomplete="off">
       </label>
+      <span id="whoami" class="whoami" hidden><span id="whoami-name"></span>
+        <button type="button" id="sign-out" class="link">Sign out</button></span>
       <label class="mode">Mode
         <select id="mode">
           <option value="auto" title="Simple lookups take the fast path; everything else gets the full agent">Auto</option>
@@ -110,6 +112,17 @@
         <ul id="repo-list" class="repo-list"></ul>
       </div>
     </div>
+  </dialog>
+
+  <dialog id="login-dialog" aria-labelledby="login-title">
+    <form id="login-form" class="login">
+      <h2 id="login-title"><span class="logo" aria-hidden="true">◆</span> Sign in to BadeBhai</h2>
+      <label>Username <input id="login-user" autocomplete="username" spellcheck="false" required></label>
+      <label>Password <input id="login-pass" type="password" autocomplete="current-password" required></label>
+      <div id="login-error" class="err-line" role="alert"></div>
+      <button class="primary" type="submit" id="login-submit">Sign in</button>
+      <p class="muted small">No account? Ask whoever runs this BadeBhai to create one for you.</p>
+    </form>
   </dialog>
 
   <dialog id="code-dialog" aria-labelledby="code-title">

@@ -105,3 +105,24 @@ CREATE TABLE IF NOT EXISTS answer_cache (
     hits        INT NOT NULL DEFAULT 0,
     PRIMARY KEY (repo_id, commit, mode, qkey)
 );
+
+-- Optional accounts (AUTH_ENABLED=true). Without auth, none of this is used.
+CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL PRIMARY KEY,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,                    -- scrypt, see app/auth.py
+    role          TEXT NOT NULL DEFAULT 'member',   -- admin | member
+    api_key_hash  TEXT,                             -- sha256 of the user's API key (shown once)
+    disabled      BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Shared repos are visible to everyone; others only to their members (and admins).
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE TABLE IF NOT EXISTS repo_members (
+    repo_id  INT  NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (repo_id, username)
+);
