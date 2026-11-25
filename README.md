@@ -403,7 +403,8 @@ uv run badebhai users add teammate
   their own private ones.
 * **Private memories.** What BadeBhai remembers belongs to the signed-in user, whatever the page sends.
 * **Usage limits** for members (admins are never limited): `ASKS_PER_HOUR` (60),
-  `REPO_ADDS_PER_DAY` (10), `MAX_PRIVATE_REPOS_PER_USER` (10). Sign-in attempts are throttled.
+  `REPO_ADDS_PER_DAY` (10), `MAX_PRIVATE_REPOS_PER_USER` (10). Sign-in attempts are throttled. Limits
+  are kept in Postgres, so they hold across restarts and across several API processes.
 * Keep the API behind HTTPS (a reverse proxy such as Caddy or nginx). The MCP servers are published
   on `127.0.0.1` only, so they are not reachable from other machines.
 
@@ -451,7 +452,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 182 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 184 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

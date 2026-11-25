@@ -171,3 +171,13 @@ def test_sign_in_attempts_are_throttled(setup):
             for _ in range(11)
         ]
     assert codes[:10] == [401] * 10 and codes[10] == 429
+
+
+def test_db_usage_limiter_is_shared_and_survives_restarts(db_settings):
+    pool = get_pool(db_settings)
+    a, b = auth.DbUsageLimiter(pool), auth.DbUsageLimiter(pool)  # e.g. two API processes
+    assert a.check("bob", "ask", 2, 3600) is None
+    assert b.check("bob", "ask", 2, 3600) is None
+    wait = a.check("bob", "ask", 2, 3600)
+    assert wait is not None and 3500 < wait <= 3601
+    assert b.check("alice", "ask", 2, 3600) is None and a.check("bob", "ask", 0, 3600) is None

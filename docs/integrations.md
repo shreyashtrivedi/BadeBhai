@@ -29,6 +29,9 @@ with a cited answer (sources collapsed under "Sources") a minute or two later.
    ```
 4. Make sure the repository is added to BadeBhai (the bot ignores repos it hasn't indexed).
 
+Each accepted question is recorded before it is answered, so if BadeBhai restarts mid-answer the reply is
+finished when it comes back (GitHub within a day, Slack within its 30-minute reply window).
+
 Safeguards: every webhook is HMAC-verified; only new comments that mention the handle are answered;
 by default only the repo's owners, members and collaborators can ask (so drive-by users can't make it
 post); comments by bots, including its own, are ignored; each answer is one comment, never edits.

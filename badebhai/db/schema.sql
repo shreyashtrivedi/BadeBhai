@@ -126,3 +126,22 @@ CREATE TABLE IF NOT EXISTS repo_members (
     added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (repo_id, username)
 );
+
+-- Usage-limit events (AUTH_ENABLED), shared by every API process and kept across restarts.
+CREATE TABLE IF NOT EXISTS usage_events (
+    username TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS usage_events_idx ON usage_events (username, action, at);
+
+-- Bot replies (GitHub @badebhai, Slack /badebhai) not yet posted; resumed after a restart.
+CREATE TABLE IF NOT EXISTS bot_replies (
+    id         BIGSERIAL PRIMARY KEY,
+    kind       TEXT NOT NULL,                       -- github | slack
+    payload    JSONB NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'pending',     -- pending | done | failed
+    attempts   INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

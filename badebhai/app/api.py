@@ -16,6 +16,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -114,7 +115,7 @@ def create_app(
         await asyncio.to_thread(st.embedder.embed_query, "warm up")
         st.llm = llm or get_llm(s)
         st.jobs = {}
-        st.limiter = auth.UsageLimiter()
+        st.limiter = auth.DbUsageLimiter(st.pool) if s.auth_enabled else auth.UsageLimiter()
         st.http = httpx.AsyncClient(timeout=15.0, transport=http_transport)
         st.bot_tasks = set()
         st.session_secret = s.session_secret or secrets.token_urlsafe(32)
@@ -144,6 +145,7 @@ def create_app(
         )
         stop = asyncio.Event()
         background: list[asyncio.Task] = []
+        background.append(asyncio.create_task(_resume_bot_replies(app)))
         if s.sync_poll_interval_s > 0:
             background.append(asyncio.create_task(poll_forever(st.indexer, s.sync_poll_interval_s, stop)))
         if s.auto_ingest_repo:
@@ -854,6 +856,96 @@ def create_app(
         app.state.bot_tasks.add(task)  # keep a reference until it finishes
         task.add_done_callback(app.state.bot_tasks.discard)
 
+    def _bot_db(sql: str, params: tuple) -> Any:
+        with app.state.pool.connection() as conn:
+            cur = conn.execute(sql, params)
+            return cur.fetchone() if cur.description else None
+
+    async def _queue_reply(app: FastAPI, kind: str, payload: dict) -> None:
+        """Record the reply before answering, so a restart mid-answer resumes it instead of losing it."""
+        row = await asyncio.to_thread(
+            _bot_db,
+            "INSERT INTO bot_replies (kind, payload) VALUES (%s, %s) RETURNING id",
+            (kind, Jsonb(payload)),
+        )
+        _background(app, _run_reply(app, row[0], kind, payload))
+
+    async def _run_reply(app: FastAPI, reply_id: int, kind: str, payload: dict) -> None:
+        await asyncio.to_thread(
+            _bot_db,
+            "UPDATE bot_replies SET attempts = attempts + 1, updated_at = now() WHERE id = %s",
+            (reply_id,),
+        )
+        posted = await (_github_reply(app, payload) if kind == "github" else _slack_reply(app, payload))
+        await asyncio.to_thread(
+            _bot_db,
+            "UPDATE bot_replies SET status = %s, updated_at = now() WHERE id = %s",
+            ("done" if posted else "failed", reply_id),
+        )
+
+    async def _resume_bot_replies(app: FastAPI) -> None:
+        """Pending replies from before a restart: GitHub within a day, Slack within its 30-minute window."""
+        try:
+            rows = await asyncio.to_thread(_pending_replies)
+        except Exception:
+            log.exception("could not load pending bot replies")
+            return
+        for reply_id, kind, payload in rows:
+            log.info("resuming bot reply", extra={"id": reply_id, "kind": kind})
+            _background(app, _run_reply(app, reply_id, kind, payload))
+
+    def _pending_replies() -> list[tuple]:
+        with app.state.pool.connection() as conn:
+            conn.execute(
+                "UPDATE bot_replies SET status = 'failed' WHERE status = 'pending' AND (attempts >= 3 OR "
+                "(kind = 'slack' AND created_at < now() - interval '25 minutes') OR created_at < now() - interval '1 day')"
+            )
+            return conn.execute(
+                "SELECT id, kind, payload FROM bot_replies WHERE status = 'pending' ORDER BY id"
+            ).fetchall()
+
+    async def _github_reply(app: FastAPI, p: dict) -> bool:
+        repo = await asyncio.to_thread(repo_db.get_repo, app.state.pool, p["repo"])
+        try:
+            if repo is None:
+                raise LookupError(f"{p['repo']} is no longer indexed")
+            resp = await _answer_for_bot(
+                app, p["question"], repo, f"github:{p['author']}", p.get("context", "")
+            )
+            text = github_markdown(resp, p["question"])
+        except Exception as e:
+            log.exception("github bot answer failed", extra={"repo": p["repo"], "issue": p["number"]})
+            text = f"Sorry @{p['author']}, I couldn't answer that ({type(e).__name__}).\n\n<sub>🤖 BadeBhai</sub>"
+        try:
+            await asyncio.to_thread(
+                app.state.github.post,
+                f"/repos/{p['full_name']}/issues/{p['number']}/comments",
+                {"body": text},
+            )
+            return True
+        except Exception:
+            log.exception("github bot could not post", extra={"repo": p["repo"], "issue": p["number"]})
+            return False
+
+    async def _slack_reply(app: FastAPI, p: dict) -> bool:
+        repo = await asyncio.to_thread(repo_db.get_repo, app.state.pool, p["repo"])
+        try:
+            if repo is None:
+                raise LookupError(f"{p['repo']} is no longer indexed")
+            resp = await _answer_for_bot(app, p["question"], repo, f"slack:{p['user_id']}")
+            text = slack_mrkdwn(resp, repo.name)
+        except Exception as e:
+            log.exception("slack answer failed", extra={"repo": p["repo"]})
+            text = f"Sorry, I couldn't answer that ({type(e).__name__})."
+        try:
+            r = await app.state.http.post(
+                p["response_url"], json={"response_type": "in_channel", "text": text}
+            )
+            return r.status_code < 400
+        except httpx.HTTPError:
+            log.exception("slack reply failed")
+            return False
+
     async def _github_mention(app: FastAPI, payload: dict) -> dict:
         if not s.github_bot_enabled:
             return {"status": "ignored", "reason": "GITHUB_BOT_ENABLED is off"}
@@ -866,24 +958,18 @@ def create_app(
         if not s.github_token:
             return {"status": "ignored", "reason": "GITHUB_TOKEN is needed to post replies"}
 
-        async def reply() -> None:
-            context = (
-                f" (asked on {'pull request' if q.is_pull_request else 'issue'} #{q.number}: {q.issue_title})"
-            )
-            try:
-                resp = await _answer_for_bot(app, q.question, repo, f"github:{q.author}", context)
-                text = github_markdown(resp, q.question)
-            except Exception as e:
-                log.exception("github bot answer failed", extra={"repo": repo.name, "issue": q.number})
-                text = f"Sorry @{q.author}, I couldn't answer that ({type(e).__name__}).\n\n<sub>🤖 BadeBhai</sub>"
-            try:
-                await asyncio.to_thread(
-                    app.state.github.post, f"/repos/{q.full_name}/issues/{q.number}/comments", {"body": text}
-                )
-            except Exception:
-                log.exception("github bot could not post", extra={"repo": repo.name, "issue": q.number})
-
-        _background(app, reply())
+        context = (
+            f" (asked on {'pull request' if q.is_pull_request else 'issue'} #{q.number}: {q.issue_title})"
+        )
+        payload = {
+            "repo": repo.name,
+            "full_name": q.full_name,
+            "number": q.number,
+            "question": q.question,
+            "author": q.author,
+            "context": context,
+        }
+        await _queue_reply(app, "github", payload)
         log.info("github bot accepted", extra={"repo": repo.name, "issue": q.number, "author": q.author})
         return {"status": "accepted", "repo": repo.name, "issue": q.number}
 
@@ -921,20 +1007,13 @@ def create_app(
                 "text": "Which repository? Start with one of: " + ", ".join(names),
             }
         repo = next(r for r in repos if r.name == name)
-
-        async def reply() -> None:
-            try:
-                resp = await _answer_for_bot(request.app, question, repo, f"slack:{cmd.user_id}")
-                text = slack_mrkdwn(resp, repo.name)
-            except Exception as e:
-                log.exception("slack answer failed", extra={"repo": repo.name})
-                text = f"Sorry, I couldn't answer that ({type(e).__name__})."
-            try:
-                await st.http.post(cmd.response_url, json={"response_type": "in_channel", "text": text})
-            except httpx.HTTPError:
-                log.exception("slack reply failed")
-
-        _background(request.app, reply())
+        payload = {
+            "repo": repo.name,
+            "question": question,
+            "user_id": cmd.user_id,
+            "response_url": cmd.response_url,
+        }
+        await _queue_reply(request.app, "slack", payload)
         return {
             "response_type": "ephemeral",
             "text": f"Looking into it in *{repo.name}*… (usually a minute or two)",

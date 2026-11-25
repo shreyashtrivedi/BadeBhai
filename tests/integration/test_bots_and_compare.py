@@ -193,3 +193,50 @@ def test_compare_streams_progress_then_the_comparison(db_settings, tiny_repo, tm
     assert events[-1] == "final" and events.count("step") == 5
     assert steps[0] == "researching tiny (1 of 2)" and steps[2] == "researching tiny3 (2 of 2)"
     assert steps[-1] == "writing the comparison"
+
+
+def test_pending_bot_replies_are_resumed_after_a_restart(github_repo):
+    """A reply recorded before a crash is answered and posted when the API starts again."""
+    from psycopg.types.json import Jsonb
+
+    from badebhai.db.pool import get_pool
+
+    s = github_repo.model_copy(update={"github_bot_enabled": True, "github_token": "ghp_x"})
+    payload = {
+        "repo": "acme/tiny",
+        "full_name": "acme/tiny",
+        "number": 5,
+        "question": "where is authentication handled?",
+        "author": "ana",
+        "context": "",
+    }
+    with get_pool(s).connection() as conn:
+        conn.execute("INSERT INTO bot_replies (kind, payload) VALUES ('github', %s)", (Jsonb(payload),))
+        conn.execute(
+            "INSERT INTO bot_replies (kind, payload, created_at) VALUES ('slack', %s, now() - interval '2 hours')",
+            (
+                Jsonb(
+                    {
+                        "repo": "acme/tiny",
+                        "question": "x",
+                        "user_id": "U1",
+                        "response_url": "https://hooks.slack.com/x",
+                    }
+                ),
+            ),
+        )
+    calls, transport = _recorder()
+    gh = GitHubClient(token="ghp_x", transport=transport)
+    app = create_app(s, llm=FakeLLM({"naive": _cite_first}), toolbox_factory=toolbox_factory(s), github=gh)
+    with TestClient(app):
+        _wait_for(calls)
+        for _ in range(50):  # the status is written right after the comment is posted
+            with get_pool(s).connection() as conn:
+                statuses = dict(conn.execute("SELECT kind, status FROM bot_replies").fetchall())
+            if statuses.get("github") == "done":
+                break
+            time.sleep(0.2)
+    assert len(calls) == 1 and calls[0][1].endswith(
+        "/repos/acme/tiny/issues/5/comments"
+    )  # stale Slack one dropped
+    assert statuses == {"github": "done", "slack": "failed"}

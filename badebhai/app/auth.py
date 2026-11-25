@@ -204,3 +204,32 @@ class UsageLimiter:
                 return int(q[0] + window_s - now) + 1
             q.append(now)
             return None
+
+
+class DbUsageLimiter:
+    """UsageLimiter kept in Postgres: shared by every API process and kept across restarts."""
+
+    def __init__(self, pool: ConnectionPool):
+        self.pool = pool
+
+    def check(
+        self, user: str, action: str, limit: int, window_s: int, now: float | None = None
+    ) -> int | None:
+        if limit <= 0:
+            return None
+        with self.pool.connection() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"usage|{user}|{action}",))
+            conn.execute(
+                "DELETE FROM usage_events WHERE username = %s AND action = %s "
+                "AND at <= now() - make_interval(secs => %s)",
+                (user, action, window_s),
+            )
+            count, wait = conn.execute(
+                "SELECT count(*), extract(epoch FROM min(at) + make_interval(secs => %s) - now()) "
+                "FROM usage_events WHERE username = %s AND action = %s",
+                (window_s, user, action),
+            ).fetchone()
+            if count >= limit:
+                return int(wait or 0) + 1
+            conn.execute("INSERT INTO usage_events (username, action) VALUES (%s, %s)", (user, action))
+        return None
