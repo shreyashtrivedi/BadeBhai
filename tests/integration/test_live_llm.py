@@ -1,4 +1,9 @@
-"""Opt-in tests against the real Claude API: `RUN_LIVE=1 ANTHROPIC_API_KEY=... uv run pytest -m live`."""
+"""Opt-in tests against a real LLM: `RUN_LIVE=1 uv run pytest -m live`.
+
+Uses the local Ollama model by default (free); set LLM_PROVIDER=anthropic to test Claude instead.
+"""
+
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,9 +18,12 @@ pytestmark = [pytest.mark.db, pytest.mark.live]
 
 @pytest.fixture
 def live_settings(db_settings):
-    db_settings.llm_provider = "anthropic"
-    db_settings.anthropic_api_key = None  # use the environment
-    return db_settings
+    from repomind.config import LOCAL_PROFILE, Settings
+
+    provider = os.environ.get("LLM_PROVIDER", "ollama")
+    # Re-create (not copy) so provider-specific defaults such as the local profile apply.
+    keep = db_settings.model_dump(exclude={"llm_provider", *LOCAL_PROFILE})
+    return Settings(_env_file=None, **keep, llm_provider=provider)
 
 
 def test_live_agent_cites_the_right_file(live_settings, tiny_repo):

@@ -26,6 +26,10 @@ _NOT_CLAIM = re.compile(
     r"unable to (find|determine)|don'?t have (enough )?evidence|the evidence does not)"
 )
 UNVERIFIED_MARK = " ⚠️(unverified)"
+# A trailing "Citations: [1][2][3]" line (small models add one despite the prompt) carries no claim.
+_REFERENCES_LINE = re.compile(
+    r"(?im)^\s*\**(?:citations|sources|references)\**\s*:?\s*(?:\[\d{1,3}\][\s,]*)+\.?\s*$"
+)
 
 
 class SourceOracle(Protocol):
@@ -113,6 +117,7 @@ def _is_claim(seg: str) -> bool:
 
 
 def verify_answer(answer: str, evidence: list[Evidence], oracle: SourceOracle | None) -> VerifiedAnswer:
+    answer = _REFERENCES_LINE.sub("", answer).rstrip()
     report = VerificationReport()
     problems: dict[int, str | None] = {}
 

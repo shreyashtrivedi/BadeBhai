@@ -1,11 +1,10 @@
 [project]
 name = "repomind"
 version = "0.1.0"
-description = "BadeBhai / RepoMind: an agentic RAG assistant over a live GitHub codebase, with memory."
+description = "BadeBhai / RepoMind: a free, self-hosted agentic RAG assistant over a live GitHub codebase, with memory."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=1.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "sse-starlette>=2.1",
@@ -33,6 +32,10 @@ dependencies = [
     "typer>=0.12",
     "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+# Optional paid provider. The default stack (Ollama + local embeddings) needs no API keys.
+anthropic = ["anthropic>=1.0"]
 
 [project.scripts]
 repomind = "repomind.cli:app"

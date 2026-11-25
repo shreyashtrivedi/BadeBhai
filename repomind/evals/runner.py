@@ -215,7 +215,11 @@ class EvalRunner:
             "golden": str(Path(golden_path).name),
             "models": {"embedding": self.embedder.name}
             if retrieval_only
-            else {"llm": self.s.llm_model, "fast": self.s.fast_model, "embedding": self.embedder.name},
+            else {
+                "llm": f"{self.s.llm_provider}/{self.s.main_model}",
+                "fast": self.s.fast_model,
+                "embedding": self.embedder.name,
+            },
             "settings": {
                 "max_retries": self.s.max_retries,
                 "max_tool_calls": self.s.max_tool_calls,

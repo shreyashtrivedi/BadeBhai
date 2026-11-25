@@ -16,6 +16,7 @@ from repomind.app.agent.planning import (
     GradeOutput,
     RewriteOutput,
     default_calls,
+    repair_plan,
     validate_calls,
 )
 from repomind.app.agent.state import HISTORY_TURNS, AgentState, deps_from
@@ -26,8 +27,9 @@ from repomind.app.memory.policy import ExtractionOutput, apply_candidates, worth
 from repomind.app.oracle import RepoOracle
 from repomind.app.prompts import load_prompt
 from repomind.app.schemas import Evidence, SubQuestion
-from repomind.app.security import new_tag, render_evidence, render_evidence_list
+from repomind.app.security import new_tag, per_item_chars, render_evidence, render_evidence_list
 from repomind.llm.base import LLMError, LLMUnavailable
+from repomind.llm.ollama_provider import strip_think
 from repomind.log import get_logger
 
 log = get_logger(__name__)
@@ -93,8 +95,15 @@ async def decompose(state: AgentState, config) -> dict:
 
     subs: list[SubQuestion] = []
     for i, p in enumerate(plans, start=1):
-        calls = validate_calls(p.calls, tools, s.max_calls_per_subquestion) or default_calls(
-            list(p.sources), p.query, tools
+        calls = validate_calls(p.calls, tools, s.max_calls_per_subquestion)
+        calls = repair_plan(
+            calls,
+            p.text,
+            list(p.sources),
+            p.query,
+            tools,
+            s.max_calls_per_subquestion,
+            context=state["question"],
         )
         subs.append(SubQuestion(id=f"q{i}", text=p.text, sources=list(p.sources), query=p.query, calls=calls))
     if not subs:
@@ -248,6 +257,7 @@ async def synthesize(state: AgentState, config) -> dict:
             "trace": _step(state, "synthesize", "no evidence passed grading: insufficient evidence", t0),
         }
     tag = new_tag()
+    item_chars = per_item_chars(s.evidence_char_budget, len(items), 600, 2400)
     prompt = load_prompt("synthesize")
     system = prompt.render(repo=d.repo.name, tag=tag, today=_today())
 
@@ -265,7 +275,8 @@ async def synthesize(state: AgentState, config) -> dict:
             f"Question: {state['question']}",
             "Sub-questions investigated:\n" + "\n".join(sq_lines),
             ("Notes:\n" + "\n".join(f"- {w}" for w in warnings)) if warnings else "",
-            f"Evidence ({len(items)} items):\n\n" + (render_evidence_list(items, tag) if items else "(none)"),
+            f"Evidence ({len(items)} items):\n\n"
+            + (render_evidence_list(items, tag, item_chars) if items else "(none)"),
         ]
         if x
     )
@@ -275,7 +286,7 @@ async def synthesize(state: AgentState, config) -> dict:
     ):
         chunks.append(text)
         _emit({"type": "token", "text": text})
-    answer_raw = "".join(chunks)
+    answer_raw = strip_think("".join(chunks))
     return {
         "answer_raw": answer_raw,
         "synth_keys": [e.key for e in items],
@@ -371,17 +382,19 @@ async def grade_evidence(state: AgentState, config) -> dict:
     to_grade = [sq for sq in subs if sq.status == "pending"]
 
     tag = new_tag()
-    numbering: dict[int, tuple[str, str]] = {}  # item id -> (sub-question id, evidence key)
+    # New (ungraded) items per sub-question, capped and interleaved across source types.
+    batches: dict[str, list[str]] = {
+        sq.id: pick_for_grading(sq, evidence, s.grade_items_per_subquestion) for sq in to_grade
+    }
+    n_to_grade = sum(len(v) for v in batches.values())
+    # The grader only needs enough of each item to judge relevance: half the prompt budget.
+    item_chars = per_item_chars(s.evidence_char_budget // 2, n_to_grade, 250, 900)
     blocks = []
-    n = 0
     for sq in to_grade:
-        items = []
-        for key in sq.evidence_keys:
-            if key not in evidence or sq.id in evidence[key].get("relevance_by_sq", {}):
-                continue  # already graded for this sub-question in an earlier round
-            n += 1
-            numbering[n] = (sq.id, key)
-            items.append(render_evidence(n, Evidence(**evidence[key]), tag, max_chars=900))
+        items = [
+            render_evidence(i, Evidence(**evidence[key]), tag, max_chars=item_chars)
+            for i, key in enumerate(batches[sq.id], start=1)
+        ]
         graded_before = [
             f"{evidence[k]['title']} (relevance {evidence[k]['relevance_by_sq'][sq.id]:.1f})"
             for k in sq.evidence_keys
@@ -393,7 +406,7 @@ async def grade_evidence(state: AgentState, config) -> dict:
             else ""
         )
         blocks.append(
-            f"## Sub-question {sq.id}: {sq.text}{prior}\nNew items:\n"
+            f"## Sub-question {sq.id}: {sq.text}{prior}\nNew items ({len(items)}):\n"
             + ("\n\n".join(items) if items else "(none)")
         )
 
@@ -409,17 +422,20 @@ async def grade_evidence(state: AgentState, config) -> dict:
                 fast=True,
             )
             for g in out.grades:
-                if g.id in numbering:
-                    sq_id, key = numbering[g.id]
-                    score = max(0.0, min(1.0, float(g.relevance)))
-                    evidence[key].setdefault("relevance_by_sq", {})[sq_id] = round(score, 2)
-            verdicts = {v.sub_question_id: (v.sufficient, v.missing) for v in out.verdicts}
+                keys = batches.get(g.sub_question_id)
+                if keys is None:
+                    continue
+                for i, key in enumerate(keys):  # a missing score counts as irrelevant
+                    score = max(0.0, min(1.0, float(g.scores[i]))) if i < len(g.scores) else 0.0
+                    evidence[key].setdefault("relevance_by_sq", {})[g.sub_question_id] = round(score, 2)
+                verdicts[g.sub_question_id] = (g.sufficient, g.missing)
         except LLMUnavailable:
             raise
         except LLMError as e:
             log.warning("grader failed; treating retrieval scores as neutral", extra={"error": str(e)})
-            for sq_id, key in numbering.values():
-                evidence[key].setdefault("relevance_by_sq", {})[sq_id] = s.grade_threshold
+            for sq_id, keys in batches.items():
+                for key in keys:
+                    evidence[key].setdefault("relevance_by_sq", {})[sq_id] = s.grade_threshold
 
     for ev in evidence.values():
         if ev.get("relevance_by_sq"):
@@ -439,8 +455,9 @@ async def grade_evidence(state: AgentState, config) -> dict:
         elif sq.attempts <= s.max_retries and budget_left:
             sq.status, sq.note = "weak", missing or "evidence too weak"
         else:
-            sq.status = "insufficient"
-            sq.note = (missing or "no relevant evidence found") + (
+            # Out of retries: related evidence -> partial answer; nothing relevant -> insufficient.
+            sq.status = "partial" if strong else "insufficient"
+            sq.note = (missing or ("not fully answered" if strong else "no relevant evidence found")) + (
                 "" if budget_left else " (tool budget exhausted)"
             )
         detail.append(
@@ -450,6 +467,10 @@ async def grade_evidence(state: AgentState, config) -> dict:
                 "attempt": sq.attempts,
                 "strong_items": len(strong),
                 "missing": missing,
+                "scores": {
+                    Evidence(**evidence[k]).label: evidence[k]["relevance_by_sq"][sq.id]
+                    for k in batches[sq.id]
+                },
             }
         )
     summary = ", ".join(f"{x['id']}={x['status']}" for x in detail) or "nothing to grade"
@@ -457,8 +478,23 @@ async def grade_evidence(state: AgentState, config) -> dict:
         "sub_questions": [sq.model_dump() for sq in subs],
         "evidence": evidence,
         "round": state.get("round", 0) + 1,
-        "trace": _step(state, "grade_evidence", summary, t0, verdicts=detail, graded_items=len(numbering)),
+        "trace": _step(state, "grade_evidence", summary, t0, verdicts=detail, graded_items=n_to_grade),
     }
+
+
+def pick_for_grading(sq: SubQuestion, evidence: dict[str, dict], cap: int) -> list[str]:
+    """Up to `cap` ungraded items for this sub-question, round-robin across code/doc/commit/issue
+    so one chatty source cannot crowd out the others. Items left out are graded in a later round."""
+    buckets: dict[str, list[str]] = {}
+    for key in sq.evidence_keys:
+        if key in evidence and sq.id not in evidence[key].get("relevance_by_sq", {}):
+            buckets.setdefault(evidence[key]["type"], []).append(key)
+    picked: list[str] = []
+    while len(picked) < cap and any(buckets.values()):
+        for keys in buckets.values():
+            if keys and len(picked) < cap:
+                picked.append(keys.pop(0))
+    return picked
 
 
 def route_after_grade(state: AgentState) -> str:
@@ -513,13 +549,27 @@ async def rewrite_queries(state: AgentState, config) -> dict:
         r = replans.get(sq.id)
         new_query = (r.query if r and r.query.strip() else f"{sq.text}").strip()
         calls = validate_calls(r.calls, tools, s.max_calls_per_subquestion) if r else []
+        calls = repair_plan(
+            calls,
+            sq.text,
+            sq.sources,
+            new_query,
+            tools,
+            s.max_calls_per_subquestion,
+            context=state["question"],
+        )
         calls = [c for c in calls if call_signature(c) not in sq.tried]
         if not calls:
             calls = [
                 c for c in default_calls(sq.sources, new_query, tools) if call_signature(c) not in sq.tried
             ]
         if not calls:
-            sq.status, sq.note = "insufficient", (sq.note or "") + " (no new searches left to try)"
+            strong = any(
+                evidence.get(k, {}).get("relevance_by_sq", {}).get(sq.id, 0) >= s.grade_threshold
+                for k in sq.evidence_keys
+            )
+            sq.status = "partial" if strong else "insufficient"
+            sq.note = (sq.note or "") + " (no new searches left to try)"
         else:
             sq.status, sq.query, sq.calls = "pending", new_query, calls
         detail.append({"id": sq.id, "query": new_query, "calls": calls, "status": sq.status})

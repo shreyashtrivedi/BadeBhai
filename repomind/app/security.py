@@ -61,5 +61,10 @@ def render_evidence(n: int, ev: Evidence, tag: str, max_chars: int = 2400) -> st
     return f"<{tag} {attr_s}>\n{neutralize(content, tag)}\n</{tag}>"
 
 
+def per_item_chars(budget: int, n_items: int, lo: int, hi: int) -> int:
+    """Split a prompt's evidence budget across items (small local context windows need this)."""
+    return max(lo, min(hi, budget // max(1, n_items)))
+
+
 def render_evidence_list(items: list[Evidence], tag: str, max_chars: int = 2400) -> str:
     return "\n\n".join(render_evidence(i + 1, ev, tag, max_chars) for i, ev in enumerate(items))

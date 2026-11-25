@@ -79,7 +79,8 @@ class SubQuestion(BaseModel):
     text: str
     sources: list[str]  # code | docs | commits | issues
     query: str  # current search query (rewritten on retry)
-    status: Literal["pending", "sufficient", "weak", "insufficient"] = "pending"
+    # partial: related evidence found but it does not fully answer; insufficient: nothing relevant found
+    status: Literal["pending", "sufficient", "weak", "partial", "insufficient"] = "pending"
     attempts: int = 0
     evidence_keys: list[str] = Field(default_factory=list)
     calls: list[dict[str, Any]] = Field(default_factory=list)  # planned tool calls not yet executed

@@ -88,18 +88,17 @@ def grade_all(score: float = 0.9, sufficient: bool = True):
 
     def handler(system, messages, schema):
         user = messages[-1]["content"]
-        item_ids = [int(x) for x in re.findall(r'<ev-[0-9a-f]{8} id="(\d+)"', user)]
-        sq_ids = re.findall(r"## Sub-question (q\d+):", user)
+        blocks = re.findall(r"## Sub-question (q\d+):.*?New items \((\d+)\):", user, re.S)
         return {
-            "grades": [{"id": i, "relevance": score} for i in item_ids],
-            "verdicts": [
+            "grades": [
                 {
                     "sub_question_id": q,
+                    "scores": [score] * int(n),
                     "sufficient": sufficient,
                     "missing": "" if sufficient else "nothing relevant",
                 }
-                for q in sq_ids
-            ],
+                for q, n in blocks
+            ]
         }
 
     return handler

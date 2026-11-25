@@ -115,3 +115,10 @@ def test_code_blocks_are_not_segmented_as_claims():
     text = "Example usage [1]:\n\n```python\nsession.auth = ('user', 'pass')  # sets basic auth for all requests\n```\n"
     out = verify_answer(text, ev, FakeOracle())
     assert out.report.uncited_claims == []
+
+
+def test_trailing_references_line_is_removed_before_counting():
+    ev = [code_ev(1, 2), code_ev(3, 4)]
+    out = verify_answer("Auth helpers live in the module [1].\n\nCitations: [1][2]", ev, FakeOracle())
+    assert out.answer == "Auth helpers live in the module [1]."
+    assert out.report.total_citations == 1

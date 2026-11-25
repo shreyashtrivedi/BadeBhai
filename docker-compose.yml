@@ -1,7 +1,10 @@
 name: repomind
 
-# One command: `docker compose up --build`, then open http://localhost:8000
-# The demo repo (psf/requests @ v2.32.3) is indexed automatically on first start.
+# Completely free, self-hosted stack. One command: `docker compose up --build`, then open
+# http://localhost:8000. On an NVIDIA GPU machine add the GPU override for much faster answers:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+# First start pulls the local LLM (OLLAMA_MODEL, ~2.5 GB) and indexes the demo repo
+# (psf/requests @ v2.32.3).
 
 x-app: &app
   image: repomind:latest
@@ -16,6 +19,10 @@ x-app: &app
     MCP_CODE_SEARCH_URL: http://mcp-code:8101/mcp
     MCP_GIT_HISTORY_URL: http://mcp-git:8102/mcp
     MCP_DOCS_URL: http://mcp-docs:8103/mcp
+    LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+    OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b-instruct}
+    OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-}
     LOG_JSON: "true"
   volumes:
     - repos:/data
@@ -42,6 +49,35 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Local LLM server (free, open models). Port published so `uv run repomind ...` on the host can use it.
+  ollama:
+    image: ollama/ollama:0.40.18
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0  # halves KV-cache memory so longer contexts fit small GPUs
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # One-shot: download the configured model(s) into the ollama volume (skipped quickly if present).
+  ollama-pull:
+    image: ollama/ollama:0.40.18
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODELS: ${OLLAMA_MODEL:-qwen3:4b-instruct} ${OLLAMA_FAST_MODEL:-}
+    entrypoint: ["/bin/sh", "-c", "for m in $$MODELS; do echo pulling $$m; ollama pull $$m || exit 1; done"]
+    depends_on:
+      ollama: { condition: service_healthy }
+    restart: "no"
 
   mcp-code:
     <<: *app
@@ -85,7 +121,9 @@ services:
       mcp-code: { condition: service_healthy }
       mcp-git: { condition: service_healthy }
       mcp-docs: { condition: service_healthy }
+      ollama-pull: { condition: service_completed_successfully }
 
 volumes:
   pgdata:
   repos:
+  ollama:

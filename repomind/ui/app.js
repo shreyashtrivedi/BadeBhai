@@ -188,7 +188,8 @@ function renderFinal(holder, r) {
   badges.push(`<span class="badge">${r.mode}</span>`);
   badges.push(`<span class="badge">${(r.latency_ms / 1000).toFixed(1)} s</span>`);
   if (r.usage?.llm_calls) {
-    const cost = r.usage.cost_complete ? ` · $${(r.usage.cost_usd || 0).toFixed(4)}` : " · cost n/a";
+    const cost = !r.usage.cost_complete ? " · cost n/a"
+      : r.usage.cost_usd === 0 ? " · free (local model)" : ` · $${r.usage.cost_usd.toFixed(4)}`;
     badges.push(`<span class="badge">${r.usage.llm_calls} LLM calls${cost}</span>`);
   }
   if (r.tool_calls?.length) badges.push(`<span class="badge">${r.tool_calls.length} MCP tool calls</span>`);

@@ -76,7 +76,7 @@ class AnthropicProvider(LLMProvider):
     def _params(
         self, *, fast: bool, system: str, messages: list[dict], max_tokens: int, fmt: dict | None = None
     ) -> tuple[dict[str, Any], bool]:
-        model = self.s.fast_model if fast else self.s.llm_model
+        model = self.s.fast_model if fast else self.s.main_model
         params: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,

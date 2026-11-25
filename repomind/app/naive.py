@@ -14,7 +14,7 @@ from repomind.app.evidence import evidence_from_hit
 from repomind.app.oracle import RepoOracle
 from repomind.app.prompts import load_prompt
 from repomind.app.schemas import AskResponse, TraceStep
-from repomind.app.security import new_tag, render_evidence_list
+from repomind.app.security import new_tag, per_item_chars, render_evidence_list
 from repomind.config import Settings
 from repomind.db.repos import RepoRecord
 from repomind.llm.base import LLMProvider
@@ -58,11 +58,10 @@ async def answer_naive(
     )
 
     tag = new_tag()
+    item_chars = per_item_chars(settings.evidence_char_budget, len(evidence), 600, 2400)
     prompt = load_prompt("naive")
     system = prompt.render(repo=repo.name, tag=tag)
-    user = (
-        f"Question: {question}\n\nEvidence ({len(evidence)} items):\n\n{render_evidence_list(evidence, tag)}"
-    )
+    user = f"Question: {question}\n\nEvidence ({len(evidence)} items):\n\n{render_evidence_list(evidence, tag, item_chars)}"
     t = time.perf_counter()
     raw = await llm.complete(purpose="naive", system=system, messages=[{"role": "user", "content": user}])
     trace.append(

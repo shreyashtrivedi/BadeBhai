@@ -329,7 +329,8 @@ def test_rewrite_follows_leads_and_recovers(indexed, tiny_repo, git):
     with _client(indexed, llm) as c:
         body = c.post("/ask", json={"question": "Why exponential backoff?", "repo": "tiny"}).json()
     assert body["sub_questions"][0]["status"] == "sufficient"
-    assert [t["tool"] for t in body["tool_calls"]] == ["search_code", "blame"]
+    # plan repair adds the commit search the "commits" source asked for; the rewrite follows with blame
+    assert [t["tool"] for t in body["tool_calls"]] == ["search_code", "search_commits", "blame"]
     assert body["citations"][0]["type"] == "commit"
     assert body["verification"]["valid_citations"] == 1
 
@@ -438,3 +439,50 @@ def test_prompt_injection_in_repo_content_is_contained(db_settings, tiny_repo, g
     assert mems == []
     assert "PWNED" not in body["answer"]
     assert any(e["suspicious"] for e in body["evidence"])
+
+
+def test_related_but_incomplete_evidence_is_partial_not_insufficient(indexed):
+    llm = FakeLLM(
+        {
+            "decompose": AUTH_PLAN,
+            "grade": grade_all(0.7, sufficient=False),  # relevant items, but never judged complete
+            "rewrite": lambda s, m, sc: {"replans": []},
+            "synthesize": cite_first,
+        }
+    )
+    with _client(indexed, llm) as c:
+        body = c.post("/ask", json={"question": "Why does auth work this way?", "repo": "tiny"}).json()
+    assert body["sub_questions"][0]["status"] == "partial"
+    assert body["insufficient"] == []
+    assert (
+        llm.calls_for("synthesize") and "[PARTIAL]" in llm.calls_for("synthesize")[0].messages[-1]["content"]
+    )
+    assert body["verification"]["valid_citations"] == 1
+
+
+def test_plan_repair_enriches_generic_queries_and_adds_commit_search():
+    from repomind.app.agent.planning import repair_plan
+    from repomind.app.mcp_client import ToolSpec
+
+    tools = {
+        n: ToolSpec("s", n, "", {"properties": {"query": {}}, "required": ["query"]})
+        for n in ("search_code", "search_docs", "search_commits", "search_issues")
+    }
+    calls = repair_plan(
+        [{"tool": "search_issues", "args": {"query": "open issue"}}],
+        "Is there any open issue about retry backoff?",
+        ["issues"],
+        "open issue",
+        tools,
+        3,
+    )
+    assert calls == [{"tool": "search_issues", "args": {"query": "open issue retry backoff"}}]
+    why = repair_plan(
+        [{"tool": "search_code", "args": {"query": "retry adapter"}}],
+        "Why was retry support added to the adapter?",
+        ["code"],
+        "retry",
+        tools,
+        3,
+    )
+    assert [c["tool"] for c in why] == ["search_code", "search_commits"]

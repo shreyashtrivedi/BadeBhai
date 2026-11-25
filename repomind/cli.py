@@ -275,6 +275,7 @@ def eval_cmd(
     judge: bool = typer.Option(True, "--judge/--no-judge", help="LLM-judge answer correctness"),
     golden: str = typer.Option(None, help="golden YAML (default: psf/requests v2.32.3)"),
     mcp: str = typer.Option("inmemory", help="MCP transport for the agent: inmemory | http | stdio"),
+    judge_model: str = typer.Option(None, help="model for the LLM judge (default: the main model)"),
 ) -> None:
     """Run the golden-question eval and write repomind/evals/reports/latest.md."""
     _init()
@@ -285,7 +286,10 @@ def eval_cmd(
     from repomind.llm import get_llm
 
     s = get_settings().model_copy(update={"mcp_transport": mcp})
-    runner = EvalRunner(s, judge_llm=get_llm(s) if (judge and not retrieval_only) else None)
+    judge_llm = None
+    if judge and not retrieval_only:
+        judge_llm = get_llm(s.model_copy(update={"llm_model": judge_model}) if judge_model else s)
+    runner = EvalRunner(s, judge_llm=judge_llm)
     report = compat.run(
         runner.evaluate(
             golden or DEFAULT_GOLDEN,

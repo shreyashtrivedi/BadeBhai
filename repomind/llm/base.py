@@ -40,6 +40,8 @@ PRICES: dict[str, tuple[float, float, float]] = {
 
 
 def price_for(model: str) -> tuple[float, float, float] | None:
+    if model.startswith("ollama/"):
+        return (0.0, 0.0, 0.0)  # local open model: free
     for name, p in PRICES.items():
         if model == name or model.startswith(name + "-"):
             return p

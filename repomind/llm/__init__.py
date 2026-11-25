@@ -25,8 +25,17 @@ __all__ = [
 
 def get_llm(settings: Settings | None = None) -> LLMProvider:
     s = settings or get_settings()
-    if s.llm_provider == "anthropic":
-        from repomind.llm.anthropic_provider import AnthropicProvider
+    if s.llm_provider == "ollama":  # default: free, local
+        from repomind.llm.ollama_provider import OllamaProvider
+
+        return OllamaProvider(s)
+    if s.llm_provider == "anthropic":  # optional, paid
+        try:
+            from repomind.llm.anthropic_provider import AnthropicProvider
+        except ImportError as e:
+            raise LLMUnavailable(
+                "LLM_PROVIDER=anthropic needs the optional extra: `uv sync --extra anthropic`"
+            ) from e
 
         return AnthropicProvider(s)
     if s.llm_provider == "fake":
