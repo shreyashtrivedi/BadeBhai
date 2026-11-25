@@ -420,6 +420,7 @@ async def grade_evidence(state: AgentState, config) -> dict:
         )
 
     verdicts: dict[str, tuple[bool, str]] = {}
+    graded: set[str] = set()
     if blocks:
         prompt = load_prompt("grade")
         try:
@@ -434,6 +435,7 @@ async def grade_evidence(state: AgentState, config) -> dict:
                 keys = batches.get(g.sub_question_id)
                 if not keys:
                     continue
+                graded.add(g.sub_question_id)
                 for i, key in enumerate(keys):  # a missing score counts as irrelevant
                     score = max(0.0, min(1.0, float(g.scores[i]))) if i < len(g.scores) else 0.0
                     evidence[key].setdefault("relevance_by_sq", {})[g.sub_question_id] = round(score, 2)
@@ -445,6 +447,10 @@ async def grade_evidence(state: AgentState, config) -> dict:
             for sq_id, keys in batches.items():
                 for key in keys:
                     evidence[key].setdefault("relevance_by_sq", {})[sq_id] = s.grade_threshold
+    for sq_id, keys in batches.items():
+        if keys and sq_id not in graded:  # the grader skipped it (e.g. repeated another id): neutral
+            for key in keys:
+                evidence[key].setdefault("relevance_by_sq", {}).setdefault(sq_id, s.grade_threshold)
     for sq in to_grade:
         if not batches[sq.id]:  # nothing new since it was judged not sufficient: that verdict stands
             verdicts[sq.id] = (False, sq.note or "no new evidence found")
@@ -480,7 +486,7 @@ async def grade_evidence(state: AgentState, config) -> dict:
                 "strong_items": len(strong),
                 "missing": missing,
                 "scores": {
-                    Evidence(**evidence[k]).label: evidence[k]["relevance_by_sq"][sq.id]
+                    Evidence(**evidence[k]).label: evidence[k].get("relevance_by_sq", {}).get(sq.id, 0.0)
                     for k in batches[sq.id]
                 },
             }

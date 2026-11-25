@@ -1,0 +1,247 @@
+# Golden questions for sindresorhus/ky pinned at v2.2.0 (commit 3541888878, 2026-10-09): a small
+# TypeScript HTTP client, chosen to check that BadeBhai generalizes beyond Python / psf/requests.
+# Facts below were checked against that snapshot (source files, git log, readme.md). ky keeps no
+# changelog file, so version questions must be answered from git history.
+#
+# Fields: see requests_v2_32_3.yaml.
+repo: sindresorhus/ky
+ref: v2.2.0
+commit: 3541888878c4d303a8bc2ad61815f4e048f55a5d
+
+questions:
+  # ---------------------------------------------------------------- location
+  - id: ky-loc-retry
+    category: location
+    question: Where is the retry logic implemented?
+    expected_files: [source/core/Ky.ts, source/core/retry-timing.ts]
+    reference: >
+      In the Ky class in source/core/Ky.ts: #retry() / #retryFromError() run the request again,
+      #calculateRetryDelay() decides the wait (respecting retry.limit, delay, jitter), and beforeRetry
+      hooks run before each attempt. Retry-After / rate-limit header timing lives in source/core/retry-timing.ts.
+
+  - id: ky-loc-retry-after
+    category: location
+    question: Where is the Retry-After header parsed?
+    expected_files: [source/core/retry-timing.ts]
+    reference: >
+      source/core/retry-timing.ts parses Retry-After (delay seconds or HTTP-date in IMF-fixdate,
+      RFC 850 and asctime formats) and reset-style headers, treating values from 1,000,000,000 seconds
+      onwards as epoch timestamps.
+
+  - id: ky-loc-timeout
+    category: location
+    question: Where is the request timeout implemented?
+    expected_files: [source/utils/timeout.ts, source/core/Ky.ts]
+    reference: >
+      source/utils/timeout.ts exports the timeout() helper that races fetch against a timer and aborts;
+      Ky.ts calls it for each attempt and throws TimeoutError (source/errors/TimeoutError.ts).
+
+  - id: ky-loc-http-error
+    category: location
+    question: Where is HTTPError thrown for non-2xx responses?
+    expected_files: [source/core/Ky.ts, source/errors/HTTPError.ts]
+    reference: >
+      Ky.ts constructs `new HTTPError(...)` when a response is not ok and throwHttpErrors allows it;
+      the class is defined in source/errors/HTTPError.ts (a KyError subclass carrying response and request).
+
+  - id: ky-loc-merge-headers
+    category: location
+    question: Where are headers from instance defaults and per-request options merged?
+    expected_files: [source/utils/merge.ts]
+    reference: >
+      source/utils/merge.ts: validateAndMerge(), deepMerge(), mergeHeaders()/mergeHeaderContainers() and
+      mergeHooks() combine defaults with per-request options.
+
+  - id: ky-loc-download-progress
+    category: location
+    question: Where is download progress reported?
+    expected_files: [source/utils/body.ts]
+    reference: >
+      streamResponse() in source/utils/body.ts wraps the response body stream and calls
+      onDownloadProgress; Ky.ts uses it when the onDownloadProgress option is set.
+
+  - id: ky-loc-network-error
+    category: location
+    question: Where does ky detect that a fetch failure was a network error?
+    expected_files: [source/utils/is-network-error.ts, source/errors/NetworkError.ts, source/core/Ky.ts]
+    reference: >
+      source/utils/is-network-error.ts (isRawNetworkError) recognizes the runtime's raw TypeError from
+      fetch; Ky.ts wraps it in NetworkError (source/errors/NetworkError.ts).
+
+  - id: ky-loc-extend
+    category: location
+    question: Where are ky.create and ky.extend implemented?
+    expected_files: [source/index.ts]
+    reference: >
+      source/index.ts: createInstance() builds an instance; ky.create(newDefaults) makes a fresh instance
+      and ky.extend(newDefaults or a function of the parent defaults) merges with the parent's defaults
+      via validateAndMerge.
+
+  - id: ky-loc-json-content-type
+    category: location
+    question: Where does ky set the Content-Type header when the json option is used?
+    expected_files: [source/core/Ky.ts, source/core/constants.ts]
+    reference: >
+      In the Ky constructor (source/core/Ky.ts) the json option is stringified and the content-type
+      header is set to application/json; source/core/constants.ts maps response types (json:
+      'application/json') for the Accept header shortcuts.
+
+  - id: ky-loc-hook-types
+    category: location
+    question: Which file defines the types for hooks such as beforeRequest and afterResponse?
+    expected_files: [source/types/hooks.ts]
+    reference: >
+      source/types/hooks.ts defines the hook types (beforeRequest, beforeRetry, afterResponse,
+      beforeError, ...) and documents what each receives and may return.
+
+  # ---------------------------------------------------------------- how it works
+  - id: ky-how-retry-delay
+    category: how
+    question: How does ky decide how long to wait before retrying a request?
+    expected_files: [source/core/Ky.ts, source/core/retry-timing.ts]
+    reference: >
+      #calculateRetryDelay in Ky.ts stops once the retry count reaches retry.limit, uses the server's
+      Retry-After / rate-limit headers when present (parsed in retry-timing.ts, for afterStatusCodes),
+      otherwise the retry.delay function, optionally randomized by retry.jitter (true = random up to the
+      delay, or a custom function), and caps the wait.
+
+  - id: ky-how-before-retry
+    category: how
+    question: What can a beforeRetry hook change, and what happens if it returns ky.stop?
+    expected_files: [source/core/Ky.ts, source/core/constants.ts, source/types/hooks.ts]
+    reference: >
+      beforeRetry hooks run before each retry; they may return a new Request, a Response (used as-is), or
+      options limited to beforeRetryOptionKeys (onUploadProgress, onDownloadProgress, timeout, fetch,
+      throwHttpErrors); other keys throw a TypeError. Returning ky.stop ends retrying and resolves with no
+      response, so reading a body method fails (Ky reports a clear error and suggests throwing instead).
+
+  - id: ky-how-max-response-size
+    category: how
+    question: How does the maxResponseSize option limit response bodies?
+    expected_files: [source/utils/body.ts, source/errors/ResponseSizeError.ts]
+    reference: >
+      limitResponseSize() in source/utils/body.ts pipes the body through a TransformStream that counts
+      bytes and throws ResponseSizeError (source/errors/ResponseSizeError.ts) once the total exceeds
+      maxResponseSize; Infinity disables the limit.
+
+  - id: ky-how-base-url
+    category: how
+    question: How do the prefix and baseUrl options combine to build the request URL?
+    expected_files: [source/core/Ky.ts]
+    reference: >
+      resolveInput() in Ky.ts joins a string input to `prefix`, then resolves it against `baseUrl` with
+      standard URL resolution; a URL or Request input is used as-is. Passing the old `prefixUrl` option
+      throws an error explaining it was renamed `prefix` in v2.
+
+  # ---------------------------------------------------------------- history (git only: no changelog)
+  - id: ky-why-prefix-rename
+    category: history
+    question: Why was the prefixUrl option renamed, and in which change?
+    expected_commits: ["1f2ad7f"]
+    expected_files: [source/core/Ky.ts]
+    reference: >
+      Commit 1f2ad7f (Seth Holladay, 2026-03-03, PR #606) "Add baseUrl option, rename prefixUrl to prefix,
+      and allow leading slashes in input": prefix now allows slashes in input, and the new baseUrl option
+      gives standard URL resolution. Shipped in v2.0.0.
+
+  - id: ky-hist-network-error
+    category: history
+    question: When was the NetworkError class added, and by whom?
+    expected_commits: ["eaf0b80"]
+    expected_files: [source/errors/NetworkError.ts]
+    reference: >
+      Commit eaf0b80 by Sindre Sorhus on 2026-03-25, "Add NetworkError class and tighten retry logic"
+      (#842), released in v2.0.0.
+
+  - id: ky-hist-schema-validation
+    category: history
+    question: When was Standard Schema validation for .json() added?
+    expected_commits: ["94741a9"]
+    expected_files: [source/errors/SchemaValidationError.ts]
+    reference: >
+      Commit 94741a9 by Sindre Sorhus on 2026-03-03 (#830), adding SchemaValidationError; part of v2.0.0.
+
+  - id: ky-hist-2-0-0
+    category: history
+    question: What were the main changes in version 2.0.0?
+    expected_commits: ["1f2ad7f", "94741a9", "eaf0b80"]
+    reference: >
+      Among the commits from v1.14.3 to v2.0.0 (45 non-merge commits): the baseUrl option and prefixUrl ->
+      prefix rename (1f2ad7f, #606), Standard Schema validation for .json() (94741a9, #830), and the
+      NetworkError class with tightened retry logic (eaf0b80, #842).
+
+  - id: ky-hist-query-method
+    category: history
+    question: When did ky add support for the QUERY HTTP method?
+    expected_commits: ["6edddd9"]
+    reference: >
+      Commit 6edddd9 by Sindre Sorhus on 2026-07-06, "Add QUERY method support" (#873), adding ky.query().
+
+  - id: ky-hist-retry-after-july
+    category: history
+    question: What changed in Retry-After handling during July 2026, and which files?
+    expected_commits: ["3419113"]
+    expected_files: [source/core/retry-timing.ts]
+    reference: >
+      Commit 3419113 (Sindre Sorhus, 2026-07-07, #874) "Improve Retry-After handling" added
+      source/core/retry-timing.ts and reworked Ky.ts, retry types, options and tests.
+
+  # ---------------------------------------------------------------- issues
+  - id: ky-issues-retry
+    category: issues
+    question: Are there GitHub issues or pull requests discussing retries?
+    expected_issue: true
+    reference: >
+      Yes; retry behaviour is a frequent topic of ky issues and PRs (any relevant issue or PR counts).
+
+  # ---------------------------------------------------------------- change planning
+  - id: ky-plan-new-hook
+    category: planning
+    question: Which files would I touch to add a new kind of hook?
+    expected_files: [source/types/hooks.ts, source/core/Ky.ts, source/utils/merge.ts]
+    reference: >
+      Declare the hook type in source/types/hooks.ts, run it at the right point of the request lifecycle in
+      source/core/Ky.ts, make option merging include it (mergeHooks in source/utils/merge.ts and the
+      normalized hook defaults), document it in readme.md and add tests.
+
+  - id: ky-plan-new-error
+    category: planning
+    question: Where would I add a new error class for a new kind of failure?
+    expected_files: [source/errors/KyError.ts, source/index.ts]
+    reference: >
+      Add a class in source/errors/ extending KyError (source/errors/KyError.ts), like TimeoutError or
+      NetworkError, throw it from source/core/Ky.ts, and export it from source/index.ts.
+
+  # ---------------------------------------------------------------- docs
+  - id: ky-doc-install
+    category: docs
+    question: How do I install ky according to the docs?
+    expected_files: [readme.md]
+    reference: "`npm install ky` (readme.md, Install); CDN builds are listed too (jsdelivr, unpkg, esm.sh)."
+
+  - id: ky-doc-proxy
+    category: docs
+    question: How do I use a proxy with ky in Node.js?
+    expected_files: [readme.md]
+    reference: >
+      readme.md "Proxy support (Node.js)": Node.js 24.5+ supports proxies from environment variables with
+      NODE_USE_ENV_PROXY=1 (or --use-env-proxy) and HTTP_PROXY / HTTPS_PROXY.
+
+  # ---------------------------------------------------------------- unanswerable
+  - id: ky-none-graphql
+    category: unanswerable
+    question: Where is the GraphQL client implemented in this repository?
+    answerable: false
+    reference: There is no GraphQL client in ky; it is a general Fetch-based HTTP client.
+
+  - id: ky-none-websocket
+    category: unanswerable
+    question: How does ky manage WebSocket connections and their heartbeat interval?
+    answerable: false
+    reference: ky does not implement WebSockets; there is no heartbeat setting.
+
+  - id: ky-none-xhr
+    category: unanswerable
+    question: Which file implements the XMLHttpRequest fallback for old browsers?
+    answerable: false
+    reference: ky is built on the Fetch API only; there is no XMLHttpRequest fallback.

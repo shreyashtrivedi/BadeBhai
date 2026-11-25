@@ -186,6 +186,14 @@ class Hit:
         return d
 
 
+_DECLARATION = re.compile(r"(^|/)(types?|typings|@types|interfaces)/|\.d\.[cm]?ts$|\.pyi$")
+_ASKS_TYPES = re.compile(r"(?i)\b(types?|typings?|interfaces?|declarations?|typescript|signatures?)\b")
+
+
+def is_declaration_path(path: str) -> bool:
+    return bool(_DECLARATION.search(path))
+
+
 _SELECT = "id AS chunk_id, path, kind, language, symbol, symbol_type, start_line, end_line, content"
 
 
@@ -241,6 +249,10 @@ def hybrid_search(
                 rows.setdefault(r["chunk_id"], r)
                 kw_rank[r["chunk_id"]] = i + 1
 
+    asks_types = bool(_ASKS_TYPES.search(query)) or bool(
+        path_prefix and is_declaration_path(path_prefix + "x.ts")
+    )
+    decl_penalty = 1.0 if asks_types else s.declaration_path_penalty
     hits: list[Hit] = []
     for cid, r in rows.items():
         score = 0.0
@@ -250,6 +262,8 @@ def hybrid_search(
             score += 1.0 / (s.rrf_k + kw_rank[cid])
         if is_test_path(r["path"]) and not (path_prefix and is_test_path(path_prefix + "x")):
             score *= s.test_path_penalty
+        elif decl_penalty < 1.0 and is_declaration_path(r["path"]):
+            score *= decl_penalty
         hits.append(
             Hit(
                 chunk_id=cid,

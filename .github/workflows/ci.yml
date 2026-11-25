@@ -1,0 +1,76 @@
+# Lint + tests on every push and pull request, then a free retrieval-quality gate on the two pinned
+# eval repos (no LLM involved: it checks that search still finds the right files).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: badebhai
+          POSTGRES_PASSWORD: badebhai
+          POSTGRES_DB: badebhai
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U badebhai" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+        env:
+          TEST_ADMIN_DATABASE_URL: postgresql://badebhai:badebhai@localhost:5433/badebhai
+
+  retrieval-quality:
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: badebhai
+          POSTGRES_PASSWORD: badebhai
+          POSTGRES_DB: badebhai
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U badebhai" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://badebhai:badebhai@localhost:5433/badebhai_ci
+      DATA_DIR: ${{ runner.temp }}/badebhai-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('badebhai/config.py') }}
+      - name: Index the pinned eval repos
+        run: |
+          uv run badebhai ingest psf/requests@v2.32.3
+          uv run badebhai ingest sindresorhus/ky@v2.2.0
+      - name: Retrieval quality gate (thresholds a little below the committed reports)
+        run: |
+          uv run badebhai eval --retrieval-only --fail-under "hit@1=0.68,hit@5=0.88"
+          uv run badebhai eval --retrieval-only --golden badebhai/evals/golden/ky_v2_2_0.yaml --fail-under "hit@1=0.48,hit@5=0.64"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrieval-reports
+          path: badebhai/evals/reports/*.md

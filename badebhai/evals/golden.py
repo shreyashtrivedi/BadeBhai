@@ -39,7 +39,11 @@ class GoldenSet:
 
 def load_golden(path: Path | str = DEFAULT_GOLDEN) -> GoldenSet:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    qs = [GoldenQuestion(**q) for q in raw["questions"]]
+    # YAML reads an all-digit sha prefix such as 3419113 as a number: commits are always strings
+    qs = [
+        GoldenQuestion(**{**q, "expected_commits": [str(c) for c in q.get("expected_commits", [])]})
+        for q in raw["questions"]
+    ]
     ids = [q.id for q in qs]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate question ids in golden set")

@@ -41,3 +41,12 @@ def test_refusals_phrased_as_does_not_manage_count_as_insufficient():
 
     assert said_insufficient("Requests does not manage WebSocket connections or heartbeat intervals.")
     assert not said_insufficient("Requests manages connection pools through urllib3 [1].")
+
+
+def test_ci_quality_gate():
+    from badebhai.cli import check_gate
+
+    summary = {"retrieval": {"hit@1": 0.714, "hit@5": 0.914}}
+    assert check_gate(summary, "hit@1=0.68,hit@5=0.88") == []
+    assert check_gate(summary, "hit@1=0.8") == ["retrieval: hit@1 = 0.714 < 0.8"]
+    assert check_gate(summary, "recall=0.5") == ["retrieval: metric 'recall' is missing"]

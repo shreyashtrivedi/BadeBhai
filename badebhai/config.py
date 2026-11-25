@@ -74,7 +74,10 @@ class Settings(BaseSettings):
     # --- retrieval ---
     retrieval_candidates: int = 40  # per-arm candidates before fusion
     rrf_k: int = 60
-    test_path_penalty: float = 0.85  # multiply fused score of test files (1.0 disables)
+    test_path_penalty: float = 0.7  # multiply fused score of test files (1.0 disables)
+    # Type-declaration files (types/, typings/, *.d.ts, *.pyi) describe every option in doc comments and
+    # outrank the code that implements it; not applied when the question asks about types.
+    declaration_path_penalty: float = 0.6
     # Optional local cross-encoder that reorders the top candidates (e.g. BAAI/bge-reranker-base).
     reranker: str | None = None
     rerank_candidates: int = 30

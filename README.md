@@ -349,6 +349,18 @@ Earlier retrieval-only work:
   grouping runs of tiny definitions such as the 25 small exception classes into one chunk
   ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
   [after](badebhai/evals/reports/20261124-230610.md)).
+- **A second repository caught a blind spot.** All numbers above come from one Python repo, so a
+  second golden set was written for a TypeScript project, `sindresorhus/ky` v2.2.0
+  ([28 questions](badebhai/evals/golden/ky_v2_2_0.yaml), facts checked against that snapshot; ky has no
+  changelog, so version questions must be answered from git). Plain retrieval found the right file
+  first only 24% of the time there (vs 71% on requests): TypeScript type files (`source/types/options.ts`)
+  describe every option in long doc comments and outranked the code implementing it, and test files
+  did too. Down-weighting declaration files (unless the question asks about types) and tests took ky
+  to 52% hit@1 / 68% hit@5, with requests unchanged at 71.4% / 91.4%
+  ([ky before](badebhai/evals/reports/20261125-201236-ky-before-penalties.md),
+  [ky after](badebhai/evals/reports/20261125-202124.md),
+  [requests after](badebhai/evals/reports/20261125-202155.md)). ky's large readme still crowds the
+  doc results; that is the next thing to look at.
 - **A reranker did not pay off here.** A local cross-encoder over the top 30 candidates
   (`RERANKER=...`) was measured with the retrieval-only eval: `ms-marco-MiniLM-L-6-v2` lowered hit@1
   from 71.4% to 68.6% and hit@3 from 91.4% to 88.6% while tripling retrieval time
@@ -427,10 +439,15 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 170 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 181 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```
+
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint and the tests on every push
+and pull request, then indexes both pinned eval repos and runs the free retrieval eval with a quality
+gate (`badebhai eval --retrieval-only --fail-under "hit@1=0.68,hit@5=0.88"`), so a change that makes
+search worse fails the build before anyone notices it in answers.
 
 Tests use a deterministic hashing embedder and a scripted fake LLM, so they need no downloads or keys.
 They cover chunking, redaction, hybrid retrieval, incremental sync, the three MCP servers (with a

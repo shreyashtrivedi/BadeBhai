@@ -432,6 +432,9 @@ def eval_cmd(
     mcp: str = typer.Option("inmemory", help="MCP transport for the agent: inmemory | http | stdio"),
     judge_model: str = typer.Option(None, help="model for the LLM judge (default: the main model)"),
     resume: str = typer.Option(None, help="run id to resume (results are checkpointed as they finish)"),
+    fail_under: str = typer.Option(
+        None, help='quality gate for CI, e.g. "hit@5=0.88,hit@1=0.6": exit 1 if any system scores lower'
+    ),
 ) -> None:
     """Run the golden-question eval and write badebhai/evals/reports/latest.md."""
     _init()
@@ -461,6 +464,28 @@ def eval_cmd(
     typer.echo(markdown(report))
     typer.echo(f"raw results: {raw}")
     typer.echo(f"report: {md}")
+    if fail_under:
+        failures = check_gate(report["summary"], fail_under)
+        for line in failures:
+            typer.echo(f"FAIL {line}", err=True)
+        if failures:
+            raise typer.Exit(1)
+        typer.echo(f"quality gate passed: {fail_under}")
+
+
+def check_gate(summary: dict, spec: str) -> list[str]:
+    """`spec` like "hit@5=0.88,hit@1=0.6"; returns one line per system/metric below its threshold."""
+    failures = []
+    for part in filter(None, (x.strip() for x in spec.split(","))):
+        metric, _, value = part.partition("=")
+        threshold = float(value)
+        for system, metrics in summary.items():
+            got = metrics.get(metric.strip())
+            if got is None:
+                failures.append(f"{system}: metric {metric!r} is missing")
+            elif got < threshold:
+                failures.append(f"{system}: {metric} = {got:.3f} < {threshold}")
+    return failures
 
 
 @app.command("reset-db")

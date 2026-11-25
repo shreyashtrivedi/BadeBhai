@@ -639,3 +639,37 @@ def test_plan_repair_ignores_date_windows_the_model_invented():
         context="What changed in src/requests during May 2024?",
     )
     assert dated[0] == {"tool": "recent_changes", "args": {"since": "2024-05-01", "until": "2024-05-31"}}
+
+
+def test_grader_skipping_a_subquestion_does_not_crash(indexed):
+    """Regression: two sub-questions share evidence and the small grader repeats one id instead of
+    grading both. The skipped one must get neutral scores, not a KeyError."""
+    two = plan(
+        (
+            "Where is authentication handled?",
+            ["code"],
+            "authentication",
+            [("search_code", {"query": "auth"})],
+        ),
+        ("How are credentials encoded?", ["code"], "credentials", [("search_code", {"query": "auth"})]),
+    )
+
+    def lopsided(system, messages, schema):
+        user = messages[-1]["content"]
+        blocks = re.findall(r"## Sub-question (q\d+):.*?New items \((\d+)\):", user, re.S)
+        q, n = blocks[-1]
+        grade = {"sub_question_id": q, "scores": [0.9] * int(n), "sufficient": True, "missing": ""}
+        return {"grades": [grade] * len(blocks)}  # the same id repeated, the other one never graded
+
+    llm = FakeLLM({"decompose": two, "grade": lopsided, "synthesize": cite_first})
+    with _client(indexed, llm) as c:
+        r = c.post(
+            "/ask",
+            json={
+                "question": "Where is auth and how are credentials encoded?",
+                "repo": "tiny",
+                "mode": "agent",
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert "app/auth.py" in r.json()["answer"]
