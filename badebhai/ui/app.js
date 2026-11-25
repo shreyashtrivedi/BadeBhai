@@ -144,16 +144,16 @@ async function ask() {
   let streamed = "";
   const cmp = $("#compare").value;
   try {
-    if (cmp && cmp !== repo) {
+    const comparing = cmp && cmp !== repo;
+    if (comparing) {
       setStatus(`Comparing ${repo} and ${cmp}: BadeBhai researches each repository, then compares. This takes a few minutes.`);
       bubble.textContent = "Researching each repository…";
-      const r = await api("/compare", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, repos: [repo, cmp], mode: $("#mode").value, user_id: body.user_id }) });
-      renderFinal(holder, r);
-      return;
     }
-    const resp = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    const resp = comparing
+      ? await fetch("/compare/stream", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question, repos: [repo, cmp], mode: $("#mode").value, user_id: body.user_id }) })
+      : await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!resp.ok) { const b = await resp.json().catch(() => ({})); throw new Error(b.error || b.detail || resp.statusText); }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -168,7 +168,7 @@ async function ask() {
         const ev = parseSse(block);
         if (!ev) continue;
         if (ev.event === "start") store.set(threadKey(), ev.data.thread_id);
-        else if (ev.event === "step") addStep(ev.data);
+        else if (ev.event === "step") { addStep(ev.data); if (comparing) bubble.textContent = `${ev.data.summary}…`; }
         else if (ev.event === "tool") addTool(ev.data);
         else if (ev.event === "token") { streamed += ev.data.text; bubble.textContent = streamed; msgs.scrollTop = msgs.scrollHeight; }
         else if (ev.event === "final") renderFinal(holder, ev.data.response);

@@ -640,9 +640,7 @@ def create_app(
             await _remember(st, req, repo, resp.model_dump())
         return resp
 
-    @app.post("/compare", response_model=AskResponse)
-    async def compare(request: Request, body: CompareRequest) -> AskResponse:
-        """Answer one question for 2-3 repos, then compare them with citations into each."""
+    def _compare_setup(request: Request, body: CompareRequest):
         _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
         names = list(dict.fromkeys(body.repos))
         if len(names) < 2:
@@ -660,10 +658,54 @@ def create_app(
                 )
             return await st.runner.ask(req, repo)
 
+        return repos, answer_one
+
+    @app.post("/compare", response_model=AskResponse)
+    async def compare(request: Request, body: CompareRequest) -> AskResponse:
+        """Answer one question for 2-3 repos, then compare them with citations into each."""
+        repos, answer_one = _compare_setup(request, body)
         with track_usage() as usage:
-            resp = await compare_repos(body.question, repos, answer_one, st.llm)
+            resp = await compare_repos(body.question, repos, answer_one, request.app.state.llm)
         resp.usage = usage.summary()
         return resp
+
+    @app.post("/compare/stream")
+    async def compare_stream(request: Request, body: CompareRequest) -> EventSourceResponse:
+        """/compare as server-sent events: a `step` per repo researched, then `final` (or `error`)."""
+        repos, answer_one = _compare_setup(request, body)
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def run() -> None:
+            with track_usage() as usage:
+                try:
+                    resp = await compare_repos(
+                        body.question, repos, answer_one, request.app.state.llm, queue.put
+                    )
+                    resp.usage = usage.summary()
+                    await queue.put({"type": "final", "response": resp.model_dump()})
+                except LLMUnavailable as e:
+                    await queue.put({"type": "error", "error": str(e), "status": 503})
+                except LLMError as e:
+                    await queue.put({"type": "error", "error": str(e), "status": 502})
+                except TimeoutError:
+                    await queue.put({"type": "error", "error": "timed out", "status": 504})
+                except Exception:
+                    log.exception("compare stream failed")
+                    await queue.put({"type": "error", "error": "internal error", "status": 500})
+
+        async def events():
+            task = asyncio.create_task(run())
+            try:
+                while True:
+                    ev = await queue.get()
+                    yield {"event": ev["type"], "data": json.dumps(ev, default=str)}
+                    if ev["type"] in ("final", "error"):
+                        return
+            finally:
+                if not task.done():
+                    task.cancel()  # the client went away
+
+        return EventSourceResponse(events())
 
     @app.post("/ask/stream")
     async def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:

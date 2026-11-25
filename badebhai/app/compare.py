@@ -50,11 +50,20 @@ async def compare(
     repos: list,
     answer_one: Callable[[object], Awaitable[AskResponse]],
     llm,
+    on_progress: Callable[[dict], Awaitable[None]] | None = None,
 ) -> AskResponse:
+    async def progress(summary: str, started: float) -> None:
+        if on_progress is not None:
+            ms = int((time.perf_counter() - started) * 1000)
+            await on_progress({"type": "step", "node": "compare", "summary": summary, "ms": ms})
+
     t0 = time.perf_counter()
     sections, citations, trace, tool_calls, insufficient = [], [], [], [], []
-    for repo in repos:
+    for i, repo in enumerate(repos, start=1):
+        t_repo = time.perf_counter()
+        await progress(f"researching {repo.name} ({i} of {len(repos)})", t_repo)
         resp = await answer_one(repo)
+        await progress(f"{repo.name}: answered with {len(resp.citations)} citation(s)", t_repo)
         text, cites = renumber(resp, repo.name, len(citations))
         citations += cites
         sections.append(f"### {repo.name}\n{text}")
@@ -67,6 +76,7 @@ async def compare(
     system = prompt.render(repos=names, today=date.today().isoformat())
     user = f"Question: {question}\n\n" + "\n\n".join(sections)
     t = time.perf_counter()
+    await progress("writing the comparison", t)
     raw = await llm.complete(purpose="compare", system=system, messages=[{"role": "user", "content": user}])
     answer, bad = check_markers(raw, {c.id for c in citations})
     trace.append(

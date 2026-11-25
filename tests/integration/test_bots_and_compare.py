@@ -164,3 +164,32 @@ def test_compare_two_repos_with_citations_into_each(db_settings, tiny_repo, tmp_
     assert (
         any(s["node"].startswith("tiny2: ") for s in body["trace"]) and body["trace"][-1]["node"] == "compare"
     )
+
+
+def test_compare_streams_progress_then_the_comparison(db_settings, tiny_repo, tmp_path):
+    other = tmp_path / "tiny3"
+    shutil.copytree(tiny_repo, other)
+    Indexer(db_settings).ingest(str(tiny_repo), name="tiny")
+    Indexer(db_settings).ingest(str(other), name="tiny3")
+    llm = FakeLLM(
+        {"naive": _cite_first, "compare": lambda system, messages, schema: "Both use app/auth.py [1]."}
+    )
+    with (
+        TestClient(create_app(db_settings, llm=llm, toolbox_factory=toolbox_factory(db_settings))) as c,
+        c.stream(
+            "POST",
+            "/compare/stream",
+            json={"question": "Where is authentication handled?", "repos": ["tiny", "tiny3"]},
+        ) as r,
+    ):
+        assert r.status_code == 200
+        lines = list(r.iter_lines())
+    events = [ln[len("event: ") :].strip() for ln in lines if ln.startswith("event: ")]
+    steps = [
+        json.loads(ln[len("data: ") :])["summary"]
+        for ln in lines
+        if ln.startswith("data: ") and '"step"' in ln
+    ]
+    assert events[-1] == "final" and events.count("step") == 5
+    assert steps[0] == "researching tiny (1 of 2)" and steps[2] == "researching tiny3 (2 of 2)"
+    assert steps[-1] == "writing the comparison"

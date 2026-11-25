@@ -210,7 +210,7 @@ setup in [docs/integrations.md](docs/integrations.md).
 | `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` · `DELETE /repos/{name}` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update, remove (index + downloaded copy + memories; `?keep_memories=true`) |
 | `GET /file?repo=&path=` | an indexed file's text for the code viewer (secrets redacted; only indexed files) |
 | `POST /feedback` · `GET /feedback?repo=&rating=` | 👍/👎 on answers, with an optional comment |
-| `POST /compare` | `{"question", "repos": [a, b(, c)], "mode"}`: one answer per repo, then a cited comparison |
+| `POST /compare` · `POST /compare/stream` | `{"question", "repos": [a, b(, c)], "mode"}`: one answer per repo, then a cited comparison; the stream sends a `step` per repo researched, then `final` |
 | `POST /integrations/slack/command` | Slack slash command (signature-verified; off unless `SLACK_SIGNING_SECRET`) |
 | `GET /jobs/{id}` · `GET /jobs?status=running` · `GET /setup` | progress of adds and updates (`stage`, `done`/`total` files); whether a GitHub token is configured |
 | `POST /webhooks/github` | GitHub webhook (HMAC-SHA256 verified): pushes keep the index live; `@badebhai` issue comments get answers when `GITHUB_BOT_ENABLED` |
@@ -451,7 +451,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 181 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 182 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```
