@@ -59,6 +59,7 @@ class Citation(BaseModel):
     snippet: str = ""
     valid: bool = True
     problem: str | None = None
+    repo: str | None = None  # set when an answer spans repositories (compare)
 
 
 class VerificationReport(BaseModel):
@@ -102,6 +103,13 @@ class AskRequest(BaseModel):
     mode: Literal["auto", "agent", "naive"] = "auto"  # auto: fast path for simple lookups
     user_id: str = "anonymous"
     thread_id: str | None = None
+
+
+class CompareRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    repos: list[str] = Field(min_length=2, max_length=3)
+    mode: Literal["auto", "agent", "naive"] = "auto"
+    user_id: str = "anonymous"
 
 
 class AskResponse(BaseModel):

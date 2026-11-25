@@ -189,6 +189,14 @@ milliseconds, unless the answer could depend on who asks (an ongoing conversatio
 you for that repo). A sync to a new commit starts fresh, entries expire after a week (issues are live
 data), and a 👎 removes that answer from the cache.
 
+**Compare repositories.** Pick a second repo in the **vs** menu (or `POST /compare {"question",
+"repos": [a, b]}`): BadeBhai answers the question for each repo separately, then writes a comparison
+that keeps citations into both, e.g. *"How do Flask and FastAPI handle request validation?"*
+
+**Where your team already is.** An optional GitHub bot answers `@badebhai ...` comments on issues and
+PRs, and an optional Slack command `/badebhai ...` answers in a channel. Both are off by default;
+setup in [docs/integrations.md](docs/integrations.md).
+
 **From your editor**: Claude Code, Cursor, VS Code and other MCP clients can ask BadeBhai directly
 (`ask`, `list_repos`, `add_repo`) or use its raw search tools. Setup: [docs/editors.md](docs/editors.md).
 
@@ -202,8 +210,10 @@ data), and a 👎 removes that answer from the cache.
 | `POST /repos {"source"}` · `GET /repos` · `POST /repos/{owner}/{name}/sync` · `DELETE /repos/{name}` | add (checked first: 400/404/409/413 with a plain-language `error` and `needs_token`), list, update, remove (index + downloaded copy + memories; `?keep_memories=true`) |
 | `GET /file?repo=&path=` | an indexed file's text for the code viewer (secrets redacted; only indexed files) |
 | `POST /feedback` · `GET /feedback?repo=&rating=` | 👍/👎 on answers, with an optional comment |
+| `POST /compare` | `{"question", "repos": [a, b(, c)], "mode"}`: one answer per repo, then a cited comparison |
+| `POST /integrations/slack/command` | Slack slash command (signature-verified; off unless `SLACK_SIGNING_SECRET`) |
 | `GET /jobs/{id}` · `GET /jobs?status=running` · `GET /setup` | progress of adds and updates (`stage`, `done`/`total` files); whether a GitHub token is configured |
-| `POST /webhooks/github` | GitHub push webhook (HMAC-SHA256 verified) |
+| `POST /webhooks/github` | GitHub webhook (HMAC-SHA256 verified): pushes keep the index live; `@badebhai` issue comments get answers when `GITHUB_BOT_ENABLED` |
 | `GET /search?repo=&q=&kind=code\|doc\|all` · `GET /tools` | debugging: raw hybrid search, discovered MCP tools |
 
 **CLI**: `badebhai ingest | sync [--watch] | repos | remove | search | ask | serve | mcp up | mcp serve |
@@ -397,6 +407,8 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 | `API_ALLOW_LOCAL_PATHS` | `false` | let the web page / `POST /repos` add folders on the server's disk (the CLI always can) |
 | `API_MAX_REPO_MB` | `2048` | largest GitHub repo (as GitHub reports it) the web page will add |
 | `GITHUB_WEBHOOK_SECRET` | (none) | enables `POST /webhooks/github` |
+| `GITHUB_BOT_ENABLED` / `GITHUB_BOT_HANDLE` / `GITHUB_BOT_ALLOW_ANYONE` | `false` / `@badebhai` / `false` | answer mentions in issues/PRs ([setup](docs/integrations.md)) |
+| `SLACK_SIGNING_SECRET` / `SLACK_DEFAULT_REPO` | (none) | enable the `/badebhai` Slack command ([setup](docs/integrations.md)) |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `BAAI/bge-small-en-v1.5` / `384` | changing the model triggers a full re-embed |
 | `MCP_TRANSPORT` | `http` | `http`, `stdio` or `inmemory` |
 | `MAX_TOOL_CALLS` / `MAX_RETRIES` / `MAX_SUBQUESTIONS` | `24` / `1` / `3` with Ollama (`2` / `5` otherwise) | per-question guardrails; the local profile also uses smaller evidence quotas and a 20-minute request timeout |
@@ -415,7 +427,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 161 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 170 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

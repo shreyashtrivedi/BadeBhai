@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     github_cache_ttl_s: int = 120
 
+    # --- integrations (off by default: they post to outside services) ---
+    github_bot_enabled: bool = False  # answer "@badebhai ..." comments (needs webhook + GITHUB_TOKEN)
+    github_bot_handle: str = "@badebhai"
+    github_bot_allow_anyone: bool = False  # default: only owners, members, collaborators
+    slack_signing_secret: str | None = None  # enables POST /integrations/slack/command
+    slack_default_repo: str | None = None
+
     # --- live sync ---
     sync_poll_interval_s: int = 0  # 0 disables the polling loop
     auto_ingest_repo: str | None = None  # e.g. https://github.com/psf/requests@v2.32.3

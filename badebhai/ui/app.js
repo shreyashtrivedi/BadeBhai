@@ -141,7 +141,16 @@ async function ask() {
   const body = { question, repo, mode: $("#mode").value, user_id: $("#user").value.trim() || "anonymous",
                  thread_id: store.get(threadKey(), null) };
   let streamed = "";
+  const cmp = $("#compare").value;
   try {
+    if (cmp && cmp !== repo) {
+      setStatus(`Comparing ${repo} and ${cmp}: BadeBhai researches each repository, then compares. This takes a few minutes.`);
+      bubble.textContent = "Researching each repository…";
+      const r = await api("/compare", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, repos: [repo, cmp], mode: $("#mode").value, user_id: body.user_id }) });
+      renderFinal(holder, r);
+      return;
+    }
     const resp = await fetch("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
     const reader = resp.body.getReader();
@@ -215,7 +224,7 @@ function renderFinal(holder, r) {
   for (const w of r.warnings || []) extra += `<div class="notice">${esc(w)}</div>`;
   if (v.invalid_citations?.length) extra += `<div class="notice">Verifier removed ${v.invalid_citations.length} citation(s): ${esc(v.invalid_citations.map((x) => x.problem).join("; "))}</div>`;
   holder.insertAdjacentHTML("beforeend", extra);
-  addFeedback(holder, r);
+  if (r.mode !== "compare") addFeedback(holder, r);
   renderCitations();
   renderTrace(r.trace || [], r.tool_calls || []);
   setStatus(r.thread_id ? `Thread ${r.thread_id}` : "");
@@ -317,6 +326,10 @@ async function loadRepos(select) {
   sel.innerHTML = state.repos.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}${r.ref ? " @ " + esc(r.ref) : ""}${r.last_indexed_commit ? "" : " (still being added…)"}</option>`).join("");
   if (prev && state.repos.some((r) => r.name === prev)) sel.value = prev;
   if (sel.value) store.set("badebhai.repo", sel.value);
+  const cmp = $("#compare"), prevCmp = cmp.value;
+  cmp.innerHTML = `<option value="">—</option>` + state.repos.filter((r) => r.last_indexed_commit)
+    .map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("");
+  if (prevCmp && state.repos.some((r) => r.name === prevCmp)) cmp.value = prevCmp;
   updateIntro();
   renderRepoList();
 }
@@ -648,7 +661,7 @@ async function viewCitation(n) {
   if (!c?.path) return;
   const dlg = $("#code-dialog"), body = $("#code-body");
   $("#code-title").textContent = c.path;
-  const repo = state.citationsRepo || $("#repo").value;
+  const repo = c.repo || state.citationsRepo || $("#repo").value;
   $("#code-sub").textContent = c.start_line ? `lines ${c.start_line}–${c.end_line || c.start_line} · ${repo}` : repo;
   const gh = safeUrl(c.url);
   $("#code-github").hidden = !gh;

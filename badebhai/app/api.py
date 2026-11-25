@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,12 +23,13 @@ from badebhai import __version__
 from badebhai.app import auth, cache
 from badebhai.app.agent.checkpoint import postgres_checkpointer
 from badebhai.app.agent.runner import AgentRunner
+from badebhai.app.compare import compare as compare_repos
 from badebhai.app.mcp_client import McpToolbox
 from badebhai.app.memory.store import MemoryStore
 from badebhai.app.naive import answer_naive
 from badebhai.app.onboarding import TOKEN_URL, AddRepoError, check_source, explain_failure
 from badebhai.app.router import route
-from badebhai.app.schemas import AskRequest, AskResponse
+from badebhai.app.schemas import AskRequest, AskResponse, CompareRequest
 from badebhai.config import Settings, configure_tracing, get_settings
 from badebhai.db import feedback as feedback_db
 from badebhai.db import repos as repo_db
@@ -37,6 +39,8 @@ from badebhai.ingestion.indexer import Indexer
 from badebhai.ingestion.secrets import redact
 from badebhai.ingestion.sync import poll_forever
 from badebhai.ingestion.webhook import parse_push, verify_signature
+from badebhai.integrations import github_bot, slack
+from badebhai.integrations.formatting import github_markdown, slack_mrkdwn
 from badebhai.llm import LLMError, LLMProvider, LLMUnavailable, get_llm, track_usage
 from badebhai.log import get_logger, setup_logging
 from badebhai.mcp_servers.github_client import GitHubClient
@@ -94,6 +98,7 @@ def create_app(
     toolbox_factory: Callable[[], McpToolbox] | None = None,
     checkpointer=None,
     github: GitHubClient | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     s = settings or get_settings()
 
@@ -110,6 +115,8 @@ def create_app(
         st.llm = llm or get_llm(s)
         st.jobs = {}
         st.limiter = auth.UsageLimiter()
+        st.http = httpx.AsyncClient(timeout=15.0, transport=http_transport)
+        st.bot_tasks = set()
         st.session_secret = s.session_secret or secrets.token_urlsafe(32)
         if s.auth_enabled:
             if not s.session_secret:
@@ -154,6 +161,7 @@ def create_app(
         stop.set()
         for task in background:
             task.cancel()
+        await st.http.aclose()
         if saver_cm is not None:
             await saver_cm.__aexit__(None, None, None)
 
@@ -623,6 +631,31 @@ def create_app(
             await _remember(st, req, repo, resp.model_dump())
         return resp
 
+    @app.post("/compare", response_model=AskResponse)
+    async def compare(request: Request, body: CompareRequest) -> AskResponse:
+        """Answer one question for 2-3 repos, then compare them with citations into each."""
+        _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
+        names = list(dict.fromkeys(body.repos))
+        if len(names) < 2:
+            raise HTTPException(422, "Pick two different repositories to compare.")
+        repos = [_repo(request, n) for n in names]
+        st, uid = request.app.state, _uid(request, body.user_id)
+
+        async def answer_one(repo) -> AskResponse:
+            req, _ = _resolve_mode(
+                AskRequest(question=body.question, repo=repo.name, mode=body.mode, user_id=uid)
+            )
+            if req.mode == "naive":
+                return await answer_naive(
+                    req.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
+                )
+            return await st.runner.ask(req, repo)
+
+        with track_usage() as usage:
+            resp = await compare_repos(body.question, repos, answer_one, st.llm)
+        resp.usage = usage.summary()
+        return resp
+
     @app.post("/ask/stream")
     async def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
         """Server-sent events: start, step, tool, token ... then final (or error)."""
@@ -714,6 +747,11 @@ def create_app(
         event = request.headers.get("X-GitHub-Event", "")
         if event == "ping":
             return {"status": "pong"}
+        if event == "issue_comment":
+            try:
+                return await _github_mention(request.app, json.loads(body))
+            except (json.JSONDecodeError, AttributeError):
+                raise HTTPException(400, "malformed issue_comment payload") from None
         if event != "push":
             return {"status": "ignored", "reason": f"event {event!r} is not handled"}
         try:
@@ -741,6 +779,115 @@ def create_app(
             "webhook accepted", extra={"repo": repo.name, "after": push.after, "files": len(push.touched)}
         )
         return {"status": "accepted", "job_id": job_id, "repo": repo.name, "after": push.after}
+
+    # ------------------------------------------------------------------ bots (GitHub, Slack)
+    async def _answer_for_bot(
+        app: FastAPI, question: str, repo, user_id: str, context: str = ""
+    ) -> AskResponse:
+        """Auto mode decides on the person's own words; `context` (e.g. the issue) is only passed along."""
+        st = app.state
+        req, rt = _resolve_mode(AskRequest(question=question, repo=repo.name, user_id=user_id))
+        req = req.model_copy(update={"question": question + context})
+        with track_usage() as usage:
+            if req.mode == "naive":
+                resp = await answer_naive(
+                    req.question, repo, llm=st.llm, pool=st.pool, embedder=st.embedder, settings=s
+                )
+            else:
+                resp = await st.runner.ask(req, repo)
+        resp.usage, resp.route = usage.summary(), rt
+        return resp
+
+    def _background(app: FastAPI, coro) -> None:
+        task = asyncio.create_task(coro)
+        app.state.bot_tasks.add(task)  # keep a reference until it finishes
+        task.add_done_callback(app.state.bot_tasks.discard)
+
+    async def _github_mention(app: FastAPI, payload: dict) -> dict:
+        if not s.github_bot_enabled:
+            return {"status": "ignored", "reason": "GITHUB_BOT_ENABLED is off"}
+        q, why = github_bot.parse_mention(payload, s)
+        if q is None:
+            return {"status": "ignored", "reason": why}
+        repo = await asyncio.to_thread(repo_db.find_repo_by_github, app.state.pool, q.full_name)
+        if repo is None or not repo.last_indexed_commit:
+            return {"status": "ignored", "reason": f"{q.full_name} is not indexed"}
+        if not s.github_token:
+            return {"status": "ignored", "reason": "GITHUB_TOKEN is needed to post replies"}
+
+        async def reply() -> None:
+            context = (
+                f" (asked on {'pull request' if q.is_pull_request else 'issue'} #{q.number}: {q.issue_title})"
+            )
+            try:
+                resp = await _answer_for_bot(app, q.question, repo, f"github:{q.author}", context)
+                text = github_markdown(resp, q.question)
+            except Exception as e:
+                log.exception("github bot answer failed", extra={"repo": repo.name, "issue": q.number})
+                text = f"Sorry @{q.author}, I couldn't answer that ({type(e).__name__}).\n\n<sub>🤖 BadeBhai</sub>"
+            try:
+                await asyncio.to_thread(
+                    app.state.github.post, f"/repos/{q.full_name}/issues/{q.number}/comments", {"body": text}
+                )
+            except Exception:
+                log.exception("github bot could not post", extra={"repo": repo.name, "issue": q.number})
+
+        _background(app, reply())
+        log.info("github bot accepted", extra={"repo": repo.name, "issue": q.number, "author": q.author})
+        return {"status": "accepted", "repo": repo.name, "issue": q.number}
+
+    @app.post("/integrations/slack/command")
+    async def slack_command(request: Request) -> dict:
+        """Slack slash command `/badebhai [owner/repo] <question>` (see integrations/slack.py)."""
+        if not s.slack_signing_secret:
+            raise HTTPException(503, "SLACK_SIGNING_SECRET is not configured; the Slack command is disabled")
+        body = await request.body()
+        ok = slack.verify(
+            s.slack_signing_secret,
+            request.headers.get("X-Slack-Request-Timestamp"),
+            body,
+            request.headers.get("X-Slack-Signature"),
+        )
+        if not ok:
+            raise HTTPException(401, "invalid Slack signature")
+        cmd = slack.parse_command(body)
+        if cmd is None:
+            raise HTTPException(400, "malformed Slack command")
+        st = request.app.state
+        repos = [r for r in await asyncio.to_thread(repo_db.list_repos, st.pool) if r.last_indexed_commit]
+        if s.auth_enabled:  # Slack users are not BadeBhai accounts: shared repos only
+            repos = [r for r in repos if r.shared]
+        names = [r.name for r in repos]
+        if not cmd.text:
+            return {
+                "response_type": "ephemeral",
+                "text": "Usage: `/badebhai [owner/repo] your question`. Repos: " + ", ".join(names),
+            }
+        name, question = slack.split_repo(cmd.text, names, s.slack_default_repo)
+        if name is None:
+            return {
+                "response_type": "ephemeral",
+                "text": "Which repository? Start with one of: " + ", ".join(names),
+            }
+        repo = next(r for r in repos if r.name == name)
+
+        async def reply() -> None:
+            try:
+                resp = await _answer_for_bot(request.app, question, repo, f"slack:{cmd.user_id}")
+                text = slack_mrkdwn(resp, repo.name)
+            except Exception as e:
+                log.exception("slack answer failed", extra={"repo": repo.name})
+                text = f"Sorry, I couldn't answer that ({type(e).__name__})."
+            try:
+                await st.http.post(cmd.response_url, json={"response_type": "in_channel", "text": text})
+            except httpx.HTTPError:
+                log.exception("slack reply failed")
+
+        _background(request.app, reply())
+        return {
+            "response_type": "ephemeral",
+            "text": f"Looking into it in *{repo.name}*… (usually a minute or two)",
+        }
 
     # ------------------------------------------------------------------ web UI
     if UI_DIR.exists():

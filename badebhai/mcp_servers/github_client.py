@@ -95,6 +95,21 @@ class GitHubClient:
                 delay *= 2
         raise last or GitHubError("GitHub request failed")
 
+    def post(self, path: str, json: dict[str, Any]) -> Any:
+        """One write (e.g. an issue comment). Not cached and not retried: a retry could post twice."""
+        try:
+            r = self.http.post(path, json=json)
+        except httpx.TransportError as e:
+            raise GitHubError(f"network error talking to GitHub: {e}") from e
+        if r.status_code in (403, 429) and self._is_rate_limited(r):
+            reset = r.headers.get("x-ratelimit-reset")
+            raise GitHubRateLimited(
+                datetime.fromtimestamp(int(reset), UTC) if reset else None, self.authenticated
+            )
+        if r.status_code >= 400:
+            raise GitHubError(f"GitHub returned HTTP {r.status_code}: {r.text[:200]}", r.status_code)
+        return r.json() if r.content else {}
+
     @staticmethod
     def _is_rate_limited(r: httpx.Response) -> bool:
         if r.headers.get("x-ratelimit-remaining") == "0":
