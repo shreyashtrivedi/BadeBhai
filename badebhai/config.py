@@ -32,11 +32,21 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     # ollama (default): free, local, open models. anthropic: optional paid API (`uv sync --extra anthropic`).
-    llm_provider: str = "ollama"  # ollama | anthropic | fake
+    llm_provider: str = "ollama"  # ollama | openai (any OpenAI-compatible API) | anthropic | fake
     # Overrides the provider's default model (OLLAMA_MODEL for ollama, claude-opus-5-5 for anthropic).
     llm_model: str | None = None
     # Model for decompose / grade / rewrite / memory extraction; defaults to the main model.
     llm_fast_model: str | None = None
+
+    # Any OpenAI-compatible API (Gemini free tier, Groq, OpenRouter, LM Studio, Ollama /v1); set LLM_MODEL
+    openai_base_url: str | None = None
+    openai_api_key: str | None = None
+    openai_timeout_s: float = 120.0
+    openai_max_output_tokens: int = 4096
+    openai_temperature: float = 0.2
+    openai_max_rpm: int = 0  # client-side requests-per-minute cap for free tiers (0 = off)
+    openai_reasoning_effort: str | None = None  # e.g. "low" / "none" for thinking models, if supported
+    openai_free: bool = False  # true on a free tier: costs are reported as $0 instead of "n/a"
 
     # Ollama (free, self-hosted)
     ollama_base_url: str = "http://localhost:11434"
@@ -59,7 +69,10 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
 
     # --- embeddings ---
-    embedding_provider: str = "sentence-transformers"  # sentence-transformers | hash
+    embedding_provider: str = "sentence-transformers"  # sentence-transformers | openai | hash
+    # For EMBEDDING_PROVIDER=openai (defaults to the OPENAI_* settings), e.g. Gemini's gemini-embedding-001
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dim: int = 384
     embedding_batch_size: int = 32
@@ -107,7 +120,13 @@ class Settings(BaseSettings):
 
     # --- live sync ---
     sync_poll_interval_s: int = 0  # 0 disables the polling loop
-    auto_ingest_repo: str | None = None  # e.g. https://github.com/psf/requests@v2.32.3
+    auto_ingest_repo: str | None = None  # e.g. psf/requests@v2.32.3 (comma-separate several)
+
+    # --- public demo (a hosted instance anyone can try): fixed repos, per-visitor limits ---
+    demo_mode: bool = False
+    demo_asks_per_hour: int = 10  # per visitor IP
+    demo_asks_per_day: int = 300  # all visitors together: protects a free model API quota
+    demo_source_url: str = "https://github.com/shreyashtrivedi/BadeBhai"
 
     # --- adding repos from the web UI / POST /repos ---
     # Off by default: anyone who can open the web page could otherwise index (and then read) any

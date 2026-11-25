@@ -29,6 +29,10 @@ def get_llm(settings: Settings | None = None) -> LLMProvider:
         from badebhai.llm.ollama_provider import OllamaProvider
 
         return OllamaProvider(s)
+    if s.llm_provider == "openai":  # any OpenAI-compatible API (free tiers for hosted demos)
+        from badebhai.llm.openai_provider import OpenAICompatProvider
+
+        return OpenAICompatProvider(s)
     if s.llm_provider == "anthropic":  # optional, paid
         try:
             from badebhai.llm.anthropic_provider import AnthropicProvider

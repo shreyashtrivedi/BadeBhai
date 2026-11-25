@@ -1,0 +1,22 @@
+# Optional: redeploy the public demo on Hugging Face Spaces on every push to main.
+# Setup: repository variable HF_SPACE (e.g. "your-name/badebhai") and secret HF_TOKEN (a Hugging Face
+# token with write access). Without HF_SPACE the job is skipped.
+name: Deploy demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ vars.HF_SPACE != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash deploy/huggingface/deploy.sh "${{ vars.HF_SPACE }}"
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}

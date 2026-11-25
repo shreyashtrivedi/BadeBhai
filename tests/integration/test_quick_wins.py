@@ -143,3 +143,23 @@ async def test_assistant_mcp_server_asks_the_running_api():
         err = _parse(await client.call_tool("add_repo", {"source": "x/y"}))
         assert err["error_type"] == "http_404" and err["needs_token"] is True
     assert ("POST", "/ask") in seen
+
+
+def test_missing_clone_is_restored_without_reindexing(db_settings, tiny_repo, monkeypatch):
+    """A fresh container on a free host keeps the database but loses the disk: clone back, reuse the index."""
+    from pathlib import Path
+
+    from badebhai.db import repos as repo_db
+
+    monkeypatch.setattr(indexer_mod, "ensure_clone", _clone_from(tiny_repo))
+    idx = Indexer(db_settings)
+    idx.ingest("acme/tiny")
+    repo = repo_db.get_repo(get_pool(db_settings), "acme/tiny")
+    assert indexer_mod._delete_managed_dir(
+        Path(repo.local_path), db_settings.repos_dir
+    )  # read-only git files too
+    assert idx.restore_clone(repo) is True
+    restored = repo_db.get_repo(get_pool(db_settings), "acme/tiny")
+    assert (db_settings.repos_dir / "acme__tiny" / ".git").exists()
+    assert restored.last_indexed_commit == repo.last_indexed_commit
+    assert idx.restore_clone(restored) is False  # nothing to do when the clone is there

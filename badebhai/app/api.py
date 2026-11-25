@@ -146,10 +146,11 @@ def create_app(
         stop = asyncio.Event()
         background: list[asyncio.Task] = []
         background.append(asyncio.create_task(_resume_bot_replies(app)))
+        background.append(asyncio.create_task(_restore_clones(app)))
         if s.sync_poll_interval_s > 0:
             background.append(asyncio.create_task(poll_forever(st.indexer, s.sync_poll_interval_s, stop)))
-        if s.auto_ingest_repo:
-            background.append(asyncio.create_task(_auto_ingest(app, s.auto_ingest_repo)))
+        for source in [x.strip() for x in (s.auto_ingest_repo or "").split(",") if x.strip()]:
+            background.append(asyncio.create_task(_auto_ingest(app, source)))
         log.info(
             "api ready",
             extra={
@@ -224,6 +225,37 @@ def create_app(
                 429, f"You've reached the limit of {limit} {what}. Try again in about {mins} min."
             )
 
+    def _demo_readonly() -> None:
+        if s.demo_mode:
+            raise HTTPException(
+                403,
+                "This is a public demo with fixed repositories. Run your own BadeBhai (free) to add any repo: "
+                + s.demo_source_url,
+            )
+
+    def _visitor(request: Request) -> str:
+        # Behind a hosting proxy every request comes from the proxy; the first X-Forwarded-For hop is the visitor.
+        fwd = request.headers.get("x-forwarded-for", "")
+        return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
+    def _demo_limit(request: Request) -> None:
+        if not s.demo_mode:
+            return
+        lim = request.app.state.limiter
+        # The visitor's own limit first, so their rejected requests do not use up everyone's daily quota.
+        wait = lim.check(_visitor(request), "demo-hour", s.demo_asks_per_hour, 3600)
+        if wait is not None:
+            raise HTTPException(
+                429,
+                f"Demo limit: {s.demo_asks_per_hour} questions per hour per visitor. Try again in about "
+                f"{max(1, round(wait / 60))} min, or run your own copy (free): {s.demo_source_url}",
+            )
+        if lim.check("*", "demo-day", s.demo_asks_per_day, 86400) is not None:
+            raise HTTPException(
+                429,
+                "The demo has answered its daily quota of questions. Try again tomorrow, or run your own copy.",
+            )
+
     def _can_see(request: Request, repo: repo_db.RepoRecord) -> bool:
         user = _user(request)
         if user is None or user.is_admin or repo.shared:
@@ -272,6 +304,14 @@ def create_app(
 
         asyncio.get_running_loop().run_in_executor(None, run)
         return job_id
+
+    async def _restore_clones(app: FastAPI) -> None:
+        """Indexed repos whose working copy vanished (fresh container): clone them back, no re-index."""
+        for repo in await asyncio.to_thread(repo_db.list_repos, app.state.pool):
+            try:
+                await asyncio.to_thread(app.state.indexer.restore_clone, repo)
+            except Exception:
+                log.exception("could not restore clone", extra={"repo": repo.name})
 
     async def _auto_ingest(app: FastAPI, source: str) -> None:
         from badebhai.ingestion.sources import parse_source
@@ -358,6 +398,9 @@ def create_app(
             "allow_local_paths": s.api_allow_local_paths,
             "max_repo_mb": s.api_max_repo_mb,
             "token_url": TOKEN_URL,
+            "demo_mode": s.demo_mode,
+            "source_url": s.demo_source_url,
+            "model": s.main_model,
         }
 
     @app.get("/repos")
@@ -372,6 +415,7 @@ def create_app(
     @app.patch("/repos/{name:path}")
     async def share_repo(request: Request, name: str, body: ShareRequest) -> dict:
         """Admins: make a repo visible to everyone (shared) or only to its members."""
+        _demo_readonly()
         user = _user(request)
         if user is not None and not user.is_admin:
             raise HTTPException(403, "Only an admin can change who sees a repository.")
@@ -388,6 +432,7 @@ def create_app(
     async def ingest(request: Request, body: IngestRequest) -> JSONResponse:
         """Add a repository: check it first (friendly errors, nothing downloaded yet), then index it
         in the background. Poll GET /jobs/{job_id} for progress."""
+        _demo_readonly()
         st = request.app.state
         source = f"{body.source.strip()}@{body.ref}" if body.ref else body.source
         try:
@@ -459,6 +504,7 @@ def create_app(
 
     @app.post("/repos/{owner}/{name}/sync", status_code=202)
     async def sync_repo(request: Request, owner: str, name: str) -> dict:
+        _demo_readonly()
         full = f"{owner}/{name}"
         repo = _repo(request, full)
         if job := _running_job(request.app, full):
@@ -478,6 +524,7 @@ def create_app(
     async def remove_repo(request: Request, name: str, keep_memories: bool = False) -> dict:
         """Remove a repo: its index, its downloaded copy (never a local folder you pointed at), and,
         unless keep_memories, what users told BadeBhai about it."""
+        _demo_readonly()
         repo = _repo(request, name)
         if _running_job(request.app, name):
             raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
@@ -552,7 +599,7 @@ def create_app(
         request: Request, repo: str | None = None, rating: int | None = None, limit: int = 100
     ) -> dict:
         user = _user(request)
-        if user is not None and not user.is_admin:
+        if (user is not None and not user.is_admin) or (s.demo_mode and user is None):
             raise HTTPException(403, "Only an admin can read everyone's feedback.")
         pool = request.app.state.pool
         rows = await asyncio.to_thread(feedback_db.list_feedback, pool, repo, rating, min(limit, 500))
@@ -617,6 +664,7 @@ def create_app(
             )
 
     def _ask_guard(request: Request, body: AskRequest) -> AskRequest:
+        _demo_limit(request)
         _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
         return body.model_copy(update={"user_id": _uid(request, body.user_id)})
 
@@ -643,6 +691,7 @@ def create_app(
         return resp
 
     def _compare_setup(request: Request, body: CompareRequest):
+        _demo_limit(request)
         _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
         names = list(dict.fromkeys(body.repos))
         if len(names) < 2:

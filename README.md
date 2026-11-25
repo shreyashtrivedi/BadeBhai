@@ -31,7 +31,7 @@ BadeBhai: The retry logic was added to enable automatic retries for failed HTTP 
 ```
 
 ## Contents
-[Quick start](#quick-start) · [Completely free](#completely-free) · [Architecture](#architecture) ·
+[Quick start](#quick-start) · [Public demo](#public-demo-in-the-cloud-free) · [Completely free](#completely-free) · [Architecture](#architecture) ·
 [Using it](#using-it) · [How it works](#how-it-works) · [Evaluation](#evaluation) ·
 [Sharing it with a team](#sharing-it-with-a-team) · [Configuration](#configuration) · [Development](#development) ·
 [Limitations and next steps](#limitations-and-next-steps)
@@ -91,7 +91,7 @@ A native Ollama install (ollama.com) works too: `ollama pull qwen3:4b-instruct` 
 
 | Part | What runs | Cost |
 |---|---|---|
-| LLM | Ollama + open-weight model (`qwen3:4b-instruct` by default), on your CPU/GPU | $0 |
+| LLM | Ollama + open-weight model (`qwen3:4b-instruct` by default), on your CPU/GPU; or a free-tier OpenAI-compatible API (e.g. Gemini) for hosted demos | $0 |
 | Embeddings | `BAAI/bge-small-en-v1.5` via sentence-transformers, CPU | $0 |
 | Storage, search, memory, checkpoints | Postgres 16 + pgvector | $0 |
 | Agent, API, MCP servers, UI | LangGraph, FastAPI, official MCP SDK, vanilla JS | $0 |
@@ -381,6 +381,18 @@ Earlier retrieval-only work:
   `bge-reranker-base`) took minutes per question on the laptop CPU, too slow to be useful. So it stays
   off by default; the hook is there for machines where it is fast, and the eval says whether it helps.
 
+## Public demo in the cloud (free)
+
+The hosted demo runs on free tiers only: the app on a **Render** free web service, the index in
+**Neon** free Postgres (pgvector), and the model plus embeddings from **Gemini**'s free API through
+the OpenAI-compatible provider (a 512 MB box cannot run a model). Demo mode keeps it safe to leave
+public: fixed repositories, 10 questions per visitor per hour, 300 per day in total. A restart keeps
+the index and only re-clones the repositories. Rehearsed in a 512 MB container: ~135 MB used.
+Step by step: [docs/deploy.md](docs/deploy.md).
+
+`LLM_PROVIDER=openai` and `EMBEDDING_PROVIDER=openai` also work with Groq, OpenRouter, a local LM
+Studio, or Ollama's `/v1` endpoint.
+
 ## Sharing it with a team
 
 Out of the box BadeBhai is a single-user tool on your machine. To let other people use your copy:
@@ -452,7 +464,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 184 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 193 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```

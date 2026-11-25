@@ -92,6 +92,7 @@ async function init() {
   await loadRepos(store.get("badebhai.repo", null));
   loadMemories();
   initAddRepo();
+  if (state.setup.demo_mode) initDemo();
   try {  // keep showing progress for repos still being added (e.g. after a page reload)
     const running = (await api("/jobs?status=running")).filter((j) => j.repo);
     if (running.length) watchJob(running[0].id, running[0].repo, running[0].kind, false);
@@ -362,17 +363,17 @@ function renderRepoList() {
   wrap.hidden = !state.repos.length;
   list.innerHTML = state.repos.map((r) => {
     const status = r.last_indexed_commit ? `updated ${timeAgo(r.last_indexed_at)}` : "being added…";
-    const canUpdate = r.last_indexed_commit && r.kind !== "local" && r.name.split("/").length === 2;
+    const canUpdate = !state.setup.demo_mode && r.last_indexed_commit && r.kind !== "local" && r.name.split("/").length === 2;
     const link = r.github ? `<a href="https://github.com/${esc(r.github)}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>` : esc(r.name);
     const isAdmin = state.me.user?.role === "admin";
     const sharing = state.me.auth_enabled ? ` · ${r.shared ? "shared with everyone" : "private"}` : "";
-    const shareBtn = isAdmin && r.last_indexed_commit ? `<button type="button" class="link" data-share="${esc(r.name)}" data-to="${r.shared ? "false" : "true"}">${r.shared ? "Make private" : "Share with everyone"}</button>` : "";
+    const shareBtn = isAdmin && !state.setup.demo_mode && r.last_indexed_commit ? `<button type="button" class="link" data-share="${esc(r.name)}" data-to="${r.shared ? "false" : "true"}">${r.shared ? "Make private" : "Share with everyone"}</button>` : "";
     return `<li><div><div class="name">${link}${r.ref ? ` <span class="muted">@ ${esc(r.ref)}</span>` : ""}</div><div class="muted small">${status}${sharing}</div></div>
       <div class="actions">
         ${r.last_indexed_commit ? `<button type="button" class="link" data-ask="${esc(r.name)}">Ask</button>` : ""}
         ${canUpdate ? `<button type="button" class="link" data-update="${esc(r.name)}" title="Download new commits and re-read changed files">Check for updates</button>` : ""}
         ${shareBtn}
-        ${r.last_indexed_commit ? `<button type="button" class="link danger" data-remove="${esc(r.name)}" title="Remove from BadeBhai">Remove</button>` : ""}
+        ${r.last_indexed_commit && !state.setup.demo_mode ? `<button type="button" class="link danger" data-remove="${esc(r.name)}" title="Remove from BadeBhai">Remove</button>` : ""}
       </div></li>`;
   }).join("");
 }
@@ -572,6 +573,27 @@ function renderJob(job, repo, kind, about, warnings, samples) {
   out.innerHTML = `<div class="job ${job.status}">
     <div class="job-title">${kind === "sync" ? "Updating" : "Adding"} <strong>${esc(repo)}</strong></div>${desc}
     <ol class="stages">${steps}</ol>${body}${warn}</div>`;
+}
+
+// ---------------------------------------------------------------- public demo
+function initDemo() {
+  const src = safeUrl(state.setup.source_url) || "https://github.com/shreyashtrivedi/BadeBhai";
+  const banner = $("#demo-banner");
+  const model = state.setup.model ? ` Answers by <strong>${esc(state.setup.model)}</strong>.` : "";
+  banner.innerHTML = `<strong>Live demo.</strong> Ask anything about the repositories in the Repo menu.${model}
+    For any other repo, private code, or a fully local model, <a href="${esc(src)}" target="_blank" rel="noopener noreferrer">run your own copy</a> (free).`;
+  banner.hidden = false;
+  const add = $("#add-repo");
+  add.textContent = "Run your own ↗";
+  add.title = "BadeBhai is free and open source: run it on your machine for any repository";
+  add.replaceWith(add.cloneNode(true));  // drop the "open dialog" handler
+  $("#add-repo").addEventListener("click", () => window.open(src, "_blank", "noopener"));
+  document.querySelectorAll("[data-open-add]").forEach((b) => {
+    const link = document.createElement("a");
+    link.href = src; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.textContent = "run your own copy";
+    b.replaceWith(link);
+  });
 }
 
 // ---------------------------------------------------------------- accounts (only when AUTH_ENABLED)

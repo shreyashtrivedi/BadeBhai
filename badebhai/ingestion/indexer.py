@@ -28,6 +28,7 @@ from badebhai.ingestion.filters import list_candidate_files, read_text_file
 from badebhai.ingestion.languages import classify
 from badebhai.ingestion.secrets import redact
 from badebhai.ingestion.sources import (
+    checkout_ref,
     diff_paths,
     ensure_clone,
     ensure_wiki_clone,
@@ -167,6 +168,24 @@ class Indexer:
                     candidates |= {f"wiki/{p}" for p in self._wiki_files(repo)}
                 mode = "incremental"
         return self.reindex(repo, candidates=candidates, mode=mode, progress=progress)
+
+    def restore_clone(self, repo: repo_db.RepoRecord) -> bool:
+        """Re-clone a managed repo whose working copy is gone (a fresh container on a free host) at the
+        exact commit that was indexed, so git history and file reads match the index. No re-embedding."""
+        if not repo.managed or (Path(repo.local_path) / ".git").exists():
+            return False
+        src = parse_source(repo.source, self.settings.repos_dir, ref=repo.ref, name=repo.name)
+        ensure_clone(src, token=self.settings.github_token)
+        if repo.last_indexed_commit:
+            checkout_ref(src.local_path, repo.last_indexed_commit)
+        wiki = None
+        if repo.wiki_path and repo.github_full_name:
+            wiki = ensure_wiki_clone(
+                repo.github_full_name, self.settings.repos_dir, token=self.settings.github_token
+            )
+        repo_db.set_local_paths(self.pool, repo.id, src.local_path, wiki)
+        log.info("restored missing clone", extra={"repo": repo.name, "path": str(src.local_path)})
+        return True
 
     def remove(self, repo_name: str, delete_memories: bool = True) -> dict:
         """Delete a repo's index and its managed clone. A user's own local folder is never touched."""

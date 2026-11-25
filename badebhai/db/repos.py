@@ -223,3 +223,11 @@ def count_owned(pool: ConnectionPool, username: str) -> int:
 def set_shared(pool: ConnectionPool, repo_id: int, shared: bool) -> None:
     with pool.connection() as conn:
         conn.execute("UPDATE repos SET shared = %s WHERE id = %s", (shared, repo_id))
+
+
+def set_local_paths(pool: ConnectionPool, repo_id: int, local_path: Path, wiki_path: Path | None) -> None:
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE repos SET local_path = %s, wiki_path = COALESCE(%s, wiki_path) WHERE id = %s",
+            (str(local_path), str(wiki_path) if wiki_path else None, repo_id),
+        )

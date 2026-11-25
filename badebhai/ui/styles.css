@@ -278,6 +278,13 @@ dialog#login-dialog::backdrop { background: var(--bg); }
 .login .primary { padding: 10px; border-radius: var(--radius); }
 .login p { margin: 0; }
 
+/* ---------------------------------------------------------------- public demo */
+.demo-banner {
+  padding: 8px 20px; font-size: 13.5px; background: var(--accent-soft); color: var(--text);
+  border-bottom: 1px solid var(--border); line-height: 1.5;
+}
+.demo-banner a { color: var(--accent); font-weight: 600; }
+
 @media (max-width: 900px) {
   .add-row { flex-direction: column; }
   .add-row button { padding: 10px; }

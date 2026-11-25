@@ -1,0 +1,56 @@
+# Render Blueprint for the public BadeBhai demo (free web service).
+# Render: New -> Blueprint -> pick this repository. It asks for the values marked `sync: false`.
+# Everything heavy is offloaded to free services, so the 512 MB free instance only serves requests:
+#   * database: Neon free Postgres with pgvector (DATABASE_URL)
+#   * model + embeddings: Google Gemini free tier through its OpenAI-compatible API (OPENAI_API_KEY)
+# The demo repositories are indexed on the first start (a few minutes) and kept in Neon; after a
+# restart only their git clones are restored (seconds). See docs/deploy.md.
+services:
+  - type: web
+    name: badebhai
+    runtime: python
+    plan: free
+    buildCommand: pip install uv==0.13.10 && uv sync --frozen --no-dev
+    startCommand: uv run --no-sync badebhai serve --host 0.0.0.0 --port $PORT --no-mcp
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: DATABASE_URL # Neon connection string (postgresql://...?sslmode=require)
+        sync: false
+      - key: OPENAI_API_KEY # Gemini API key from aistudio.google.com/apikey
+        sync: false
+      - key: GITHUB_TOKEN # optional: read-only token for live GitHub issue search
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: OPENAI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/
+      - key: LLM_MODEL
+        value: gemini-2.5-flash
+      - key: OPENAI_FREE
+        value: "true"
+      - key: OPENAI_MAX_RPM
+        value: "10"
+      - key: EMBEDDING_PROVIDER
+        value: openai
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_DIM
+        value: "768"
+      - key: EMBEDDING_BATCH_SIZE
+        value: "50"
+      - key: MCP_TRANSPORT
+        value: inmemory
+      - key: DEMO_MODE
+        value: "true"
+      - key: AUTO_INGEST_REPO
+        value: psf/requests@v2.32.3,sindresorhus/ky@v2.2.0
+      - key: MAX_SUBQUESTIONS
+        value: "3"
+      - key: MAX_RETRIES
+        value: "1"
+      - key: DATA_DIR
+        value: /tmp/badebhai
+      - key: LOG_JSON
+        value: "true"

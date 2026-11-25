@@ -39,9 +39,12 @@ PRICES: dict[str, tuple[float, float, float]] = {
 }
 
 
+FREE_MODEL_PREFIXES = ["ollama/"]  # openai-compat/ is added at startup when OPENAI_FREE=true
+
+
 def price_for(model: str) -> tuple[float, float, float] | None:
-    if model.startswith("ollama/"):
-        return (0.0, 0.0, 0.0)  # local open model: free
+    if any(model.startswith(p) for p in FREE_MODEL_PREFIXES):
+        return (0.0, 0.0, 0.0)  # local open model, or an API's free tier
     for name, p in PRICES.items():
         if model == name or model.startswith(name + "-"):
             return p
