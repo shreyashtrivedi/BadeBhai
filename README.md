@@ -324,7 +324,7 @@ How to read it:
   only be answered from commits or live issues, which a code/doc index cannot return.
 - **The answer-quality gap is smaller than the retrieval gap.** The judge is the same 4B model, and
   it is noisy: it gave "incorrect" to an agent answer that named the exact expected commit. History
-  ("why"/"when") questions are still the weak spot: the model reasons poorly over commit lists.
+  ("why"/"when") questions were the weak spot (0.32); see "History questions" below for what changed.
 - **Latency p95 is not reported** because it measured the build machine, not the agent: Docker
   Desktop's WSL2 GPU passthrough stalled several times during the run (the GPU sat idle while requests
   hung), and the 5 agent answers over 2 minutes all fell in those windows. Without stalls agent
@@ -349,6 +349,18 @@ Earlier retrieval-only work:
   grouping runs of tiny definitions such as the 25 small exception classes into one chunk
   ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
   [after](badebhai/evals/reports/20261124-230610.md)).
+- **History questions: 0.32 → 0.57 (agent judge, 7 questions).** Three causes, all fixed in code:
+  requests' `HISTORY.md` uses underlined ("setext") Markdown headings, which the chunker did not
+  recognise, so the 2.32.0 release notes were cut across two windows (each release is now one
+  section); keyword search split "2.32.0" into "2", "32", "0"; and the small model never turned
+  "May 2024" into a date filter. New `release_notes` and `changes_between_versions` tools, plus
+  planner rules that call them for version questions and turn a named month or date range into a
+  `recent_changes` call, took "what security issue was fixed in 2.32.0" from 0.0 to 1.0 and the
+  2.31.0 question from 0.5 to 1.0. Not everything improved: "when was retry handling made consistent
+  with the docs" now cites the wrong commit (hit@5 7/7 → 6/7), and the May 2024 answer names only 3 of
+  the month's 7 commits (judged 0.0). Reports: [after](badebhai/evals/reports/20261125-200648-history-after.md)
+  (two questions errored there: a grader crash this eval found and that is now fixed, and a run
+  interrupted by a Docker stall) and [re-run of those two](badebhai/evals/reports/20261125-212146-history-rerun.md).
 - **A second repository caught a blind spot.** All numbers above come from one Python repo, so a
   second golden set was written for a TypeScript project, `sindresorhus/ky` v2.2.0
   ([28 questions](badebhai/evals/golden/ky_v2_2_0.yaml), facts checked against that snapshot; ky has no
@@ -474,9 +486,9 @@ tests/          unit + integration
 **Limitations**
 - **A small local model is slower and less capable than a frontier model.** On a 4 GB laptop GPU an
   agent answer takes about 45 s, and the 4B model sometimes plans weak queries, grades too strictly
-  or reasons poorly over commit history; deterministic plan repair, verbatim baseline searches and
-  the "partial" status compensate, but history answers are still the weakest category. More VRAM
-  and a larger instruct model help the most.
+  or reasons poorly over commit history; deterministic plan repair, verbatim baseline searches,
+  release/time-window tools and the "partial" status compensate, but history answers (0.57) are still
+  the weakest category. More VRAM and a larger instruct model help the most.
 - **GPU passthrough on Docker Desktop (Windows/WSL2) can stall.** During long runs on the build
   machine, Ollama occasionally hung with the GPU idle (once with a CUDA error). The provider retries
   server errors, evals checkpoint and `--resume`, and `docker compose restart ollama` clears it; a
@@ -499,9 +511,8 @@ tests/          unit + integration
 **Next steps**
 1. Compare local models on the golden set (a 7-8B instruct model on a GPU with more VRAM is the
    obvious next point), and tune `GRADE_THRESHOLD` and prompts per question category.
-2. Add a local cross-encoder reranker after hybrid search (for example a small bge reranker; also
-   free), and an entailment check to the verifier.
-3. Put the API behind auth (OIDC) and derive `user_id` from the token; per-repo webhook secrets or a
-   GitHub App.
+2. Re-measure the reranker on a machine where it is fast (it lost on CPU here), and add an
+   entailment check to the verifier.
+3. OIDC sign-in on top of the built-in accounts; per-repo webhook secrets or a GitHub App.
 4. Cache issue/PR embeddings for semantic search over discussions, including PR review comments.
 5. Partition chunks per repo and support shallow clones with on-demand history.
