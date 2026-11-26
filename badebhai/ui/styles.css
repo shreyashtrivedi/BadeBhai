@@ -347,4 +347,6 @@ dialog#login-dialog::backdrop { background: var(--bg); }
   pre.cmd { white-space: pre-wrap; font-size: 11px; padding: 10px 12px; }  /* the clone URL fits on its own line */
   #local-dialog .add { padding: 16px 16px 18px; }
   #local-dialog .hint code { overflow-wrap: anywhere; }
+  .repo-list li { flex-direction: column; align-items: flex-start; gap: 4px; }  /* name, then its actions */
+  .repo-list .actions { gap: 18px; }
 }

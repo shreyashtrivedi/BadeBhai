@@ -22,7 +22,7 @@
       <label class="compare" title="Ask the same question about two repositories and compare them">vs
         <select id="compare"><option value="">—</option></select>
       </label>
-      <button id="add-repo" type="button" class="primary-soft" title="Add any GitHub repository">+ Add repo</button>
+      <button id="add-repo" type="button" class="primary-soft" title="Add, update or remove repositories">Manage repos</button>
       <label id="user-label">User
         <input id="user" type="text" spellcheck="false" autocomplete="off">
       </label>
@@ -95,9 +95,14 @@
   <dialog id="add-dialog" aria-labelledby="add-title">
     <div class="add">
       <div class="add-head">
-        <h2 id="add-title">Add a repository</h2>
+        <h2 id="add-title">Repositories</h2>
         <button type="button" class="close" id="add-close" aria-label="Close">&times;</button>
       </div>
+      <div id="repo-list-wrap" hidden>
+        <h3>Your repositories</h3>
+        <ul id="repo-list" class="repo-list"></ul>
+      </div>
+      <h3>Add a repository</h3>
       <p class="hint">Paste the GitHub address of any codebase. BadeBhai downloads a copy, reads every file, and
         is then ready for your questions. It only reads: nothing in the repository is ever changed.</p>
       <form id="add-form" class="add-row" autocomplete="off">
@@ -112,10 +117,6 @@
         (add <code>@branch</code>, <code>@tag</code> or <code>@commit</code> for a specific version)</p>
       <div id="add-progress" class="add-progress" role="status" aria-live="polite" hidden></div>
       <div id="token-box"></div>
-      <div id="repo-list-wrap" hidden>
-        <h3>Your repositories</h3>
-        <ul id="repo-list" class="repo-list"></ul>
-      </div>
     </div>
   </dialog>
 
@@ -153,7 +154,7 @@ cd BadeBhai
 docker compose up --build</code></pre>
       <p class="hint small">With an NVIDIA GPU, use
         <code>docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build</code> instead.
-        Then open <code>http://localhost:8000</code> and click <strong>+ Add repo</strong>.
+        Then open <code>http://localhost:8000</code> and click <strong>Manage repos</strong>.
         <a id="local-source" href="https://github.com/shreyashtrivedi/BadeBhai" target="_blank" rel="noopener noreferrer">Full guide on GitHub ↗</a></p>
     </div>
   </dialog>

@@ -57,14 +57,15 @@ and clones and indexes the demo repo (`psf/requests` pinned at `v2.32.3`, about 
 
 ### Ask about your own (or anyone's) codebase
 
-Click **+ Add repo** in the web page, paste a GitHub address and press **Add**. That's it: BadeBhai
+Click **Manage repos** in the web page, paste a GitHub address and press **Add**. That's it: BadeBhai
 downloads the code, shows its progress while it reads the files, and selects the repo when it's ready.
 A small repo takes seconds; a big one a few minutes.
 
 Any of these work: `pallets/flask`, `https://github.com/pallets/flask`, a link copied from the browser
 (`.../tree/3.0.0/src`), or `pallets/flask@3.0.0` for a specific branch, tag or commit. Other git hosts
-work with their full URL. The same window lists your repos with a **Check for updates** button that
-fetches new commits and re-reads only the files that changed.
+work with their full URL. The same window lists your repos, each with **Check for updates** (fetches
+new commits and re-reads only the files that changed) and **Remove** (deletes its index and its
+downloaded copy).
 
 **Do I need a GitHub token?** Not for public repositories. You need one (free, about 2 minutes) to:
 * add a **private** repository, or
