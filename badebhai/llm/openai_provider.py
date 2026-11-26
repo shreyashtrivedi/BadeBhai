@@ -46,10 +46,11 @@ log = get_logger(__name__)
 _MAX_429_WAIT_S = 45.0
 _STANDIN_FOR_S = 900.0  # an overloaded / out-of-quota model is skipped this long, then tried again
 _NOT_CHAT = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo", "exp")
-# Gemini's current free chat models, used when OPENAI_FALLBACK_MODELS is unset (gemini-2.5-flash is
-# deprecated and often overloaded); one that is gone or not free for the key is skipped automatically.
+# Gemini free-tier models that answered structured and streamed requests on 2026-11-26, best first; used
+# when OPENAI_FALLBACK_MODELS is unset. (gemini-2.5-flash: 404 for new users; 3.5/3.7/3.6/3.8-flash and
+# flash-latest: 503 or hanging; gemini-4-*: no free quota.)
 _GEMINI_STANDINS = (
-    "gemini-3.6-flash,gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
+    "gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.1-flash-lite"
 )
 _UNUSABLE_FOR_S = 6 * 3600.0  # a stand-in that is gone, or has no free quota for this key
 _DAILY_QUOTA = re.compile(r"per\s*day|perday|daily", re.I)
@@ -141,12 +142,22 @@ class OpenAICompatProvider(LLMProvider):
             log.info("model API lists models", extra={"status": r.status_code, "count": len(self._models)})
         return self._models
 
+    def _fallbacks(self) -> list[str]:
+        fallbacks = self.s.openai_fallback_models
+        if fallbacks is None and "generativelanguage.googleapis.com" in (self.s.openai_base_url or ""):
+            fallbacks = _GEMINI_STANDINS
+        return [m.strip() for m in (fallbacks or "").split(",") if m.strip()]
+
     async def _pick_replacement(self, missing: str) -> str | None:
-        """The configured model was retired (404): choose the closest available chat model instead."""
-        family = missing.split("-")[0]  # e.g. "gemini"
-        ranked = [i for i in rank_standins(await self._model_ids(), family) if i != missing]
-        stable = [i for i in ranked if "lite" not in i and "preview" not in i]
-        choice = (stable or ranked or [None])[0]
+        """The configured model was retired (404): use the first fallback model (OPENAI_FALLBACK_MODELS or
+        the known-good Gemini list), else the closest chat model the API lists."""
+        now = time.monotonic()
+        choice = next((m for m in self._fallbacks() if m != missing and self._down.get(m, 0) <= now), None)
+        if choice is None:
+            family = missing.split("-")[0]  # e.g. "gemini"
+            ranked = [i for i in rank_standins(await self._model_ids(), family) if i != missing]
+            stable = [i for i in ranked if "lite" not in i and "preview" not in i]
+            choice = (stable or ranked or [None])[0]
         if choice:
             log.warning("model not available; switching", extra={"configured": missing, "using": choice})
             self._replacement = choice
@@ -161,10 +172,7 @@ class OpenAICompatProvider(LLMProvider):
         def usable(models: list[str]) -> str | None:
             return next((m for m in models if m != failing and self._down.get(m, 0) <= now), None)
 
-        fallbacks = self.s.openai_fallback_models
-        if fallbacks is None and "generativelanguage.googleapis.com" in (self.s.openai_base_url or ""):
-            fallbacks = _GEMINI_STANDINS
-        configured = [m.strip() for m in (fallbacks or "").split(",") if m.strip()]
+        configured = self._fallbacks()
         model = usable(configured)
         if model is None:
             listed = rank_standins(await self._model_ids(), failing.split("-")[0])
