@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from badebhai import __version__
-from badebhai.app import auth, cache
+from badebhai.app import auth, cache, lowmem
 from badebhai.app.agent.checkpoint import postgres_checkpointer
 from badebhai.app.agent.runner import AgentRunner
 from badebhai.app.compare import compare as compare_repos
@@ -106,6 +106,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         setup_logging(s.log_level, s.log_json)
+        lowmem.apply(asyncio.get_running_loop())
         tracing = configure_tracing(s)
         st = app.state
         st.settings = s
@@ -147,6 +148,8 @@ def create_app(
         background.append(asyncio.create_task(_resume_bot_replies(app)))
         sources = [x.strip() for x in (s.auto_ingest_repo or "").split(",") if x.strip()]
         background.append(asyncio.create_task(_startup_repos(app, sources)))
+        if lowmem.small_host():
+            background.append(asyncio.create_task(_trim_memory_forever()))
         if s.sync_poll_interval_s > 0:
             background.append(asyncio.create_task(poll_forever(st.indexer, s.sync_poll_interval_s, stop)))
         log.info(
@@ -303,6 +306,12 @@ def create_app(
         asyncio.get_running_loop().run_in_executor(None, run)
         return job_id
 
+    async def _trim_memory_forever(every_s: float = 20.0) -> None:
+        """Small host: hand memory freed by finished requests back to the OS."""
+        while True:
+            await asyncio.sleep(every_s)
+            await asyncio.to_thread(lowmem.trim)
+
     async def _restore_clones(app: FastAPI) -> None:
         """Indexed repos whose working copy vanished (fresh container): clone them back, no re-index."""
         for repo in await asyncio.to_thread(repo_db.list_repos, app.state.pool):
@@ -321,6 +330,7 @@ def create_app(
             await asyncio.to_thread(app.state.embedder.embed_query, "warm up")
         except Exception:
             log.exception("could not load the embedding model")
+        lowmem.trim()
         for source in sources:
             try:
                 job_id = await _auto_ingest(app, source)

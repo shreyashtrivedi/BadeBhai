@@ -34,7 +34,7 @@ _CLONE_FILTER = os.environ.get("GIT_CLONE_FILTER", "").strip()
 _NICE = ["nice", "-n", "10"] if os.name == "posix" and shutil.which("nice") else []
 
 
-def _memory_limit_bytes() -> int | None:
+def memory_limit_bytes() -> int | None:
     """The container's memory limit (cgroup v2 or v1), or None when unlimited / not in a container."""
     for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
         try:
@@ -48,7 +48,7 @@ def _memory_limit_bytes() -> int | None:
 
 # On a small container git must not size itself to the host: index-pack starts one thread per host CPU
 # (a container sees them all), each with its own 96 MB delta-base cache, which alone can exceed 512 MB.
-_limit = _memory_limit_bytes()
+_limit = memory_limit_bytes()
 _LOW_MEMORY_GIT = (
     ["-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "-c", "pack.windowMemory=32m"]
     if os.environ.get("GIT_LOW_MEMORY", "").strip().lower() in ("1", "true", "yes")
