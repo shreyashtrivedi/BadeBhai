@@ -34,8 +34,11 @@ Check each service's free tier when you sign up; free tiers change.
 3. It asks for three values: `DATABASE_URL` (the Neon string), `OPENAI_API_KEY` (the Gemini key) and,
    optionally, `GITHUB_TOKEN` (a read-only fine-grained token, so live issue search is not limited to
    60 requests an hour). **Apply.**
-4. The first deploy installs everything, then indexes both demo repositories into Neon (a few minutes;
-   the page says "still being added" meanwhile). The link is shown at the top of the service page.
+4. Index the demo repositories into Neon **from your own machine**: the free instance (0.1 CPU,
+   512 MB) runs out of memory embedding them itself. Put `DATABASE_URL=<the Neon string>` in a
+   git-ignored `.env.neon` and run `bash scripts/index_into_neon.sh` (about 25 minutes on a laptop).
+   On start Render then only restores the git clones; its own auto-ingest finds every file unchanged.
+   The link is shown at the top of the service page.
 
 That link goes on your resume and in the README.
 
@@ -44,9 +47,10 @@ That link goes on your resume and in the README.
 * **Sleeping:** free Render services sleep after about 15 minutes without visitors; the next visit
   wakes it in about a minute. The index lives in Neon, so after a restart only the git clones are
   re-downloaded (seconds).
-* **Model:** `LLM_MODEL=gemini-2.5-flash`, embeddings `gemini-embedding-001` at 768 dimensions. If a
-  newer free model is available, change `LLM_MODEL` in the Render dashboard. Changing the embedding
-  model re-indexes automatically on the next start.
+* **Model:** `LLM_MODEL=gemini-2.5-flash`. When it is overloaded (503) or out of daily quota, the
+  next best Flash model the API lists answers instead for five minutes (or `OPENAI_FALLBACK_MODELS`,
+  comma-separated). Embeddings: `BAAI/bge-small-en-v1.5` on the instance (ONNX, 384 dimensions); if
+  you change the embedding model, re-run `scripts/index_into_neon.sh` with the same settings.
 * **Other APIs:** any OpenAI-compatible API works: Groq (`https://api.groq.com/openai/v1`, chat only)
   or OpenRouter (`https://openrouter.ai/api/v1`); set `OPENAI_BASE_URL`, `LLM_MODEL` and the key.
 * **Limits:** `DEMO_ASKS_PER_HOUR`, `DEMO_ASKS_PER_DAY` and `OPENAI_MAX_RPM` are environment variables.

@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     openai_max_rpm: int = 0  # client-side requests-per-minute cap for free tiers (0 = off)
     openai_reasoning_effort: str | None = None  # e.g. "low" / "none" for thinking models, if supported
     openai_free: bool = False  # true on a free tier: costs are reported as $0 instead of "n/a"
+    # Comma-separated models to answer with while LLM_MODEL is overloaded (503) or out of daily quota;
+    # empty = pick from the API's model list (other Flash models, newest first).
+    openai_fallback_models: str | None = None
 
     # Ollama (free, self-hosted)
     ollama_base_url: str = "http://localhost:11434"

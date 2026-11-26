@@ -44,6 +44,31 @@ from badebhai.log import get_logger
 log = get_logger(__name__)
 
 _MAX_429_WAIT_S = 45.0
+_STANDIN_FOR_S = 300.0  # an overloaded / out-of-quota model is skipped this long, then tried again
+_NOT_CHAT = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo", "exp")
+_DAILY_QUOTA = re.compile(r"per\s*day|perday|daily", re.I)
+
+
+def _retry_after(r: httpx.Response) -> float:
+    try:
+        return float(r.headers.get("retry-after") or 0)
+    except ValueError:
+        return 0.0
+
+
+def _version_key(model_id: str) -> list[int]:
+    return [int(x) for x in re.findall(r"\d+", model_id)]
+
+
+def rank_standins(ids: list[str], family: str) -> list[str]:
+    """Chat models to fall back on, best first: stable Flash, preview Flash, then Flash-Lite; newest first."""
+    chat = [i for i in ids if family in i and not any(k in i.lower() for k in _NOT_CHAT)]
+    flash = [i for i in chat if "flash" in i]
+
+    def tier(i: str) -> int:
+        return (2 if "lite" in i else 0) + (1 if "preview" in i else 0)
+
+    return sorted(flash or chat, key=lambda i: (tier(i), [-v for v in _version_key(i)]))
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -59,6 +84,9 @@ class OpenAICompatProvider(LLMProvider):
         self._client: httpx.AsyncClient | None = None
         self._json_mode = "json_schema"  # downgraded to "json_object" if the server rejects schemas
         self._replacement: str | None = None  # set when the configured model turned out to be retired
+        self._models: list[str] | None = None  # the API's model ids, fetched once when needed
+        self._down: dict[str, float] = {}  # model -> monotonic time until which it is skipped
+        self._standin: dict[str, str] = {}  # overloaded model -> the model answering in its place
         self._sent: deque[float] = deque()
         self._rate_lock = asyncio.Lock()
         if settings.openai_free and "openai-compat/" not in FREE_MODEL_PREFIXES:
@@ -79,33 +107,50 @@ class OpenAICompatProvider(LLMProvider):
         return self._client
 
     def _model(self, fast: bool) -> str:
-        if self._replacement:
-            return self._replacement
-        return self.s.fast_model if fast else self.s.main_model
+        model = self._replacement or (self.s.fast_model if fast else self.s.main_model)
+        for _ in range(5):  # follow stand-ins while the model they replace is still being skipped
+            nxt = self._standin.get(model)
+            if not nxt or self._down.get(model, 0) <= time.monotonic():
+                break
+            model = nxt
+        return model
+
+    async def _model_ids(self) -> list[str]:
+        if self._models is None:
+            try:
+                r = await self.client.get("models")
+                ids = [m.get("id", "") for m in r.json().get("data", [])] if r.status_code < 400 else []
+            except (httpx.HTTPError, ValueError):
+                return []
+            self._models = [i.split("/", 1)[-1] for i in ids if i]
+        return self._models
 
     async def _pick_replacement(self, missing: str) -> str | None:
         """The configured model was retired (404): choose the closest available chat model instead."""
-        try:
-            r = await self.client.get("models")
-            ids = [m.get("id", "") for m in r.json().get("data", [])] if r.status_code < 400 else []
-        except (httpx.HTTPError, ValueError):
-            return None
-        ids = [i.split("/", 1)[-1] for i in ids]
-        skip = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo")
-        chat = [i for i in ids if not any(k in i.lower() for k in skip)]
         family = missing.split("-")[0]  # e.g. "gemini"
-        flash = [
-            i
-            for i in chat
-            if family in i and "flash" in i and "lite" not in i and "preview" not in i and "exp" not in i
-        ]
-        pool = flash or [i for i in chat if family in i] or chat
-        if not pool:
-            return None
-        choice = sorted(pool, key=lambda i: [int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", i)])[-1]
-        log.warning("model not available; switching", extra={"configured": missing, "using": choice})
-        self._replacement = choice
+        ranked = [i for i in rank_standins(await self._model_ids(), family) if i != missing]
+        stable = [i for i in ranked if "lite" not in i and "preview" not in i]
+        choice = (stable or ranked or [None])[0]
+        if choice:
+            log.warning("model not available; switching", extra={"configured": missing, "using": choice})
+            self._replacement = choice
         return choice
+
+    async def _pick_standin(self, failing: str, why: str) -> str | None:
+        """`failing` is overloaded or out of quota: skip it for a while and answer with another model
+        (OPENAI_FALLBACK_MODELS if set, otherwise the best other chat model the API lists)."""
+        now = time.monotonic()
+        self._down[failing] = now + _STANDIN_FOR_S
+        configured = [m.strip() for m in (self.s.openai_fallback_models or "").split(",") if m.strip()]
+        pool = configured or rank_standins(await self._model_ids(), failing.split("-")[0])
+        for model in pool:
+            if model != failing and self._down.get(model, 0) <= now:
+                log.warning(
+                    "model busy; using a stand-in", extra={"busy": failing, "using": model, "why": why}
+                )
+                self._standin[failing] = model
+                return model
+        return None
 
     # ---------- plumbing ----------
     async def _throttle(self) -> None:
@@ -159,7 +204,7 @@ class OpenAICompatProvider(LLMProvider):
 
     async def _post(self, purpose: str, body: dict) -> dict:
         model = body["model"]
-        for attempt in range(1, 5):
+        for attempt in range(1, 7):
             await self._throttle()
             try:
                 with Timer() as t:
@@ -170,8 +215,17 @@ class OpenAICompatProvider(LLMProvider):
                 raise LLMError(
                     f"The model API timed out after {self.s.openai_timeout_s:.0f}s on {purpose}"
                 ) from e
+            retry_after = _retry_after(r)
+            # Overloaded (503) or out of quota for the day: waiting will not help, another model will.
+            if r.status_code == 503 or (
+                r.status_code == 429 and (retry_after > _MAX_429_WAIT_S or _DAILY_QUOTA.search(r.text))
+            ):
+                why = "overloaded" if r.status_code == 503 else "out of quota"
+                if attempt < 6 and (standin := await self._pick_standin(model, why)):
+                    body, model = {**body, "model": standin}, standin
+                    continue
             if r.status_code == 429 and attempt < 4:
-                wait = min(_MAX_429_WAIT_S, float(r.headers.get("retry-after") or 2**attempt))
+                wait = min(_MAX_429_WAIT_S, retry_after or 2**attempt)
                 log.warning("model API rate limited, waiting", extra={"purpose": purpose, "wait_s": wait})
                 await asyncio.sleep(wait)
                 continue

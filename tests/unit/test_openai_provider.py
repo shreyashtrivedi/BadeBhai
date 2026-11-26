@@ -144,6 +144,64 @@ def test_openai_compatible_embedder_batches_normalizes_and_retries(monkeypatch):
     assert calls == [2, 2, 1]  # first batch retried after a 429, then the last partial batch
 
 
+async def test_overloaded_model_falls_back_to_another_flash_model(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            ids = ["models/gemini-2.5-flash", "models/gemini-2.5-flash-lite", "models/gemini-3-flash-preview"]
+            return httpx.Response(200, json={"data": [{"id": i} for i in ids]})
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "gemini-2.5-flash":
+            return httpx.Response(503, json={"error": {"message": "high demand", "status": "UNAVAILABLE"}})
+        return _reply("ok")
+
+    p = _provider(handler, llm_model="gemini-2.5-flash")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "ok"
+    assert used == ["gemini-2.5-flash", "gemini-3-flash-preview"]  # no slow retries of the busy model
+    await p.complete(purpose="t", system="s", messages=[])
+    assert used[-1] == "gemini-3-flash-preview"  # stays on the stand-in while the busy model is skipped
+
+
+async def test_daily_quota_switches_model_but_per_minute_limit_waits(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "main":
+            msg = "Quota exceeded for metric: GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+            return httpx.Response(429, json={"error": {"message": msg}})
+        return _reply("ok")
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="backup-a, backup-b")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "ok"
+    assert used == ["main", "backup-a"]
+
+
+async def test_every_model_busy_reports_the_error(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": {"message": "high demand"}})
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="backup")
+    with pytest.raises(Exception, match="503"):
+        await p.complete(purpose="t", system="s", messages=[])
+
+
 async def test_retired_model_is_replaced_by_a_current_flash_model():
     used = []
 
