@@ -93,10 +93,12 @@ async function init() {
   loadMemories();
   initAddRepo();
   if (state.setup.demo_mode) initDemo();
-  try {  // keep showing progress for repos still being added (e.g. after a page reload)
-    const running = (await api("/jobs?status=running")).filter((j) => j.repo);
+  // keep showing progress for repos still being added (e.g. after a page reload); in the background, so
+  // a slow server does not leave the buttons below without their handlers
+  api("/jobs?status=running").then((jobs) => {
+    const running = jobs.filter((j) => j.repo);
     if (running.length) watchJob(running[0].id, running[0].repo, running[0].kind, false);
-  } catch { /* older server */ }
+  }).catch(() => { /* older server */ });
 
   $("#ask-form").addEventListener("submit", (e) => { e.preventDefault(); ask(); });
   $("#question").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
