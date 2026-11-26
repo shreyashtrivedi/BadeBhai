@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -57,6 +58,7 @@ class OpenAICompatProvider(LLMProvider):
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._json_mode = "json_schema"  # downgraded to "json_object" if the server rejects schemas
+        self._replacement: str | None = None  # set when the configured model turned out to be retired
         self._sent: deque[float] = deque()
         self._rate_lock = asyncio.Lock()
         if settings.openai_free and "openai-compat/" not in FREE_MODEL_PREFIXES:
@@ -77,7 +79,33 @@ class OpenAICompatProvider(LLMProvider):
         return self._client
 
     def _model(self, fast: bool) -> str:
+        if self._replacement:
+            return self._replacement
         return self.s.fast_model if fast else self.s.main_model
+
+    async def _pick_replacement(self, missing: str) -> str | None:
+        """The configured model was retired (404): choose the closest available chat model instead."""
+        try:
+            r = await self.client.get("models")
+            ids = [m.get("id", "") for m in r.json().get("data", [])] if r.status_code < 400 else []
+        except (httpx.HTTPError, ValueError):
+            return None
+        ids = [i.split("/", 1)[-1] for i in ids]
+        skip = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo")
+        chat = [i for i in ids if not any(k in i.lower() for k in skip)]
+        family = missing.split("-")[0]  # e.g. "gemini"
+        flash = [
+            i
+            for i in chat
+            if family in i and "flash" in i and "lite" not in i and "preview" not in i and "exp" not in i
+        ]
+        pool = flash or [i for i in chat if family in i] or chat
+        if not pool:
+            return None
+        choice = sorted(pool, key=lambda i: [int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", i)])[-1]
+        log.warning("model not available; switching", extra={"configured": missing, "using": choice})
+        self._replacement = choice
+        return choice
 
     # ---------- plumbing ----------
     async def _throttle(self) -> None:
@@ -149,6 +177,10 @@ class OpenAICompatProvider(LLMProvider):
                 continue
             if r.status_code >= 500 and attempt < 3:
                 await asyncio.sleep(attempt)
+                continue
+            if r.status_code == 404 and not self._replacement and await self._pick_replacement(model):
+                body = {**body, "model": self._replacement}
+                model = self._replacement
                 continue
             if r.status_code >= 400:
                 raise self._error(r.status_code, r.text)

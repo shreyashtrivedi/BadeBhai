@@ -163,3 +163,17 @@ def test_missing_clone_is_restored_without_reindexing(db_settings, tiny_repo, mo
     assert (db_settings.repos_dir / "acme__tiny" / ".git").exists()
     assert restored.last_indexed_commit == repo.last_indexed_commit
     assert idx.restore_clone(restored) is False  # nothing to do when the clone is there
+
+
+def test_changed_embedding_size_rebuilds_when_allowed(db_settings, tiny_repo):
+    from badebhai.db.pool import SchemaMismatch, close_pools
+
+    Indexer(db_settings).ingest(str(tiny_repo), name="tiny")  # 384-d index
+    close_pools()
+    bigger = db_settings.model_copy(update={"embedding_dim": 768})
+    with pytest.raises(SchemaMismatch):
+        get_pool(bigger)
+    allowed = bigger.model_copy(update={"embedding_reset_on_mismatch": True})
+    with get_pool(allowed).connection() as conn:  # rebuilt empty, no deadlock
+        assert conn.execute("SELECT count(*) FROM repos").fetchone()[0] == 0
+    close_pools()

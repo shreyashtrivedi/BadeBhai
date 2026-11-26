@@ -69,7 +69,10 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
 
     # --- embeddings ---
-    embedding_provider: str = "sentence-transformers"  # sentence-transformers | openai | hash
+    embedding_provider: str = "sentence-transformers"  # sentence-transformers | fastembed | openai | hash
+    # Changing EMBEDDING_DIM breaks the existing index; with this on, the index is dropped and rebuilt
+    # instead of refusing to start (meant for hosted demos that re-index on their own).
+    embedding_reset_on_mismatch: bool = False
     # For EMBEDDING_PROVIDER=openai (defaults to the OPENAI_* settings), e.g. Gemini's gemini-embedding-001
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None

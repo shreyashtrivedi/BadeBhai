@@ -22,8 +22,7 @@ def _provider(handler, **kw) -> OpenAICompatProvider:
         llm_provider="openai",
         openai_base_url="https://api.example.test/v1",
         openai_api_key="sk-test-key",
-        llm_model="demo-model",
-        **kw,
+        **{"llm_model": "demo-model", **kw},
     )
     return OpenAICompatProvider(s, transport=httpx.MockTransport(handler))
 
@@ -143,3 +142,28 @@ def test_openai_compatible_embedder_batches_normalizes_and_retries(monkeypatch):
     vecs = emb.embed_documents(["a", "b", "c"])
     assert vecs.shape == (3, 3) and np.allclose(vecs[0], [0.6, 0.8, 0.0])  # unit length
     assert calls == [2, 2, 1]  # first batch retried after a 429, then the last partial batch
+
+
+async def test_retired_model_is_replaced_by_a_current_flash_model():
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            ids = [
+                "models/gemini-3.0-flash",
+                "models/gemini-3.0-flash-lite",
+                "models/gemini-embedding-001",
+                "models/gemini-2.9-pro",
+            ]
+            return httpx.Response(200, json={"data": [{"id": i} for i in ids]})
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "gemini-2.5-flash":
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        return _reply("ok")
+
+    p = _provider(handler, llm_model="gemini-2.5-flash")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "ok"
+    assert used == ["gemini-2.5-flash", "gemini-3.0-flash"]
+    await p.complete(purpose="t", system="s", messages=[])
+    assert used[-1] == "gemini-3.0-flash"  # remembered

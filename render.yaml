@@ -2,7 +2,9 @@
 # Render: New -> Blueprint -> pick this repository. It asks for the values marked `sync: false`.
 # Everything heavy is offloaded to free services, so the 512 MB free instance only serves requests:
 #   * database: Neon free Postgres with pgvector (DATABASE_URL)
-#   * model + embeddings: Google Gemini free tier through its OpenAI-compatible API (OPENAI_API_KEY)
+#   * model: Google Gemini free tier through its OpenAI-compatible API (OPENAI_API_KEY); a retired
+#     LLM_MODEL is replaced automatically by the newest available Flash model
+#   * embeddings: bge-small via ONNX (fastembed) on the instance itself
 # The demo repositories are indexed on the first start (a few minutes) and kept in Neon; after a
 # restart only their git clones are restored (seconds). See docs/deploy.md.
 services:
@@ -32,14 +34,16 @@ services:
         value: "true"
       - key: OPENAI_MAX_RPM
         value: "10"
-      - key: EMBEDDING_PROVIDER
-        value: openai
+      - key: EMBEDDING_PROVIDER # local ONNX model (~150 MB): no embedding API quota to run out of
+        value: fastembed
       - key: EMBEDDING_MODEL
-        value: gemini-embedding-001
+        value: BAAI/bge-small-en-v1.5
       - key: EMBEDDING_DIM
-        value: "768"
+        value: "384"
       - key: EMBEDDING_BATCH_SIZE
-        value: "50"
+        value: "16"
+      - key: EMBEDDING_RESET_ON_MISMATCH
+        value: "true"
       - key: MCP_TRANSPORT
         value: inmemory
       - key: DEMO_MODE

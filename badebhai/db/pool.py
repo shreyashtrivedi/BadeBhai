@@ -75,12 +75,25 @@ def _configure(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
+def _ensure_schema_or_reset(s: Settings) -> None:
+    try:
+        ensure_schema(s.database_url, s.embedding_dim)
+    except SchemaMismatch:
+        if not s.embedding_reset_on_mismatch:
+            raise
+        log.warning(
+            "embedding dimension changed; dropping the index to rebuild it", extra={"dim": s.embedding_dim}
+        )
+        _drop_tables(s.database_url)  # not reset_database(): that takes the pool lock we already hold
+        ensure_schema(s.database_url, s.embedding_dim)
+
+
 def get_pool(settings: Settings | None = None) -> ConnectionPool:
     s = settings or get_settings()
     with _lock:
         pool = _pools.get(s.database_url)
         if pool is None:
-            ensure_schema(s.database_url, s.embedding_dim)
+            _ensure_schema_or_reset(s)
             pool = ConnectionPool(
                 s.database_url, min_size=1, max_size=10, configure=_configure, open=True, timeout=30
             )
@@ -94,6 +107,15 @@ def close_pools() -> None:
         for pool in _pools.values():
             pool.close()
         _pools.clear()
+
+
+def _drop_tables(database_url: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        conn.execute(
+            "DROP TABLE IF EXISTS chunks, files, memories, feedback, answer_cache, repo_members, users, usage_events, "
+            "bot_replies, repos, "
+            "schema_meta CASCADE"
+        )
 
 
 def reset_database(settings: Settings | None = None) -> None:

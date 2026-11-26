@@ -123,14 +123,19 @@ def main() -> None:
     ap.add_argument("--base", default="http://localhost:8000")
     ap.add_argument("--live-url", default=None)
     ap.add_argument("--build-only", action="store_true", help="rebuild tour/site from tour/recorded.js")
+    ap.add_argument("--out", default=None, help="write the recording here instead of tour/recorded.js (no site build)")
     args = ap.parse_args()
     if not args.build_only:
         data = record(args.base, args.live_url)
-        (TOUR / "recorded.js").write_text(
+        out = Path(args.out) if args.out else TOUR / "recorded.js"
+        out.write_text(
             "// Recorded by scripts/record_tour.py from a running BadeBhai. Repository content is untrusted data.\n"
             "window.BADEBHAI_TOUR = " + json.dumps(data, ensure_ascii=False) + ";\n",
             encoding="utf-8",
         )
+        if args.out:
+            print(f"recording: {out}")
+            return
     elif args.live_url:
         rec = (TOUR / "recorded.js").read_text(encoding="utf-8")
         payload = json.loads(rec.split("window.BADEBHAI_TOUR = ", 1)[1].rstrip().rstrip(";"))

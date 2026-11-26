@@ -96,6 +96,41 @@ class SentenceTransformerEmbedder:
         return self.model.encode([prefix + text], normalize_embeddings=True)[0].astype(np.float32)
 
 
+class FastEmbedEmbedder:
+    """bge-small (or another supported model) through ONNX Runtime: no torch, ~150 MB of memory, so it fits a
+    512 MB free web service and needs no embedding API quota."""
+
+    BGE_QUERY_PREFIX = SentenceTransformerEmbedder.BGE_QUERY_PREFIX
+
+    def __init__(self, model_name: str, dim: int, batch_size: int = 32):
+        self.name, self.dim, self.batch_size = model_name, dim, batch_size
+        self._model = None
+        self._lock = threading.Lock()
+
+    @property
+    def model(self):
+        with self._lock:
+            if self._model is None:
+                from fastembed import TextEmbedding
+
+                self._model = TextEmbedding(self.name, threads=1)
+            return self._model
+
+    def _embed(self, texts: list[str]) -> np.ndarray:
+        vecs = np.asarray(list(self.model.embed(texts, batch_size=self.batch_size)), dtype=np.float32)
+        if vecs.shape[1] != self.dim:
+            raise ValueError(f"{self.name} produces {vecs.shape[1]}-d vectors but EMBEDDING_DIM={self.dim}")
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.where(norms == 0, 1, norms)
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        return self._embed(texts) if texts else np.zeros((0, self.dim), np.float32)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        prefix = self.BGE_QUERY_PREFIX if "bge" in self.name.lower() else ""
+        return self._embed([prefix + text])[0]
+
+
 class OpenAICompatEmbedder:
     """Embeddings from an OpenAI-compatible /embeddings endpoint (Gemini's free tier, OpenAI, Ollama /v1).
     For hosts too small to load a local model (a 512 MB free web service). Vectors are L2-normalized."""
@@ -148,6 +183,8 @@ def _build(
         return HashingEmbedder(dim)
     if provider == "sentence-transformers":
         return SentenceTransformerEmbedder(model, dim, batch)
+    if provider == "fastembed":
+        return FastEmbedEmbedder(model, dim, batch)
     if provider == "openai":
         if not base_url:
             raise ValueError("EMBEDDING_PROVIDER=openai needs EMBEDDING_BASE_URL (or OPENAI_BASE_URL)")
