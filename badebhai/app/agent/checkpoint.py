@@ -20,6 +20,9 @@ async def postgres_checkpointer(database_url: str) -> AsyncIterator[AsyncPostgre
         database_url,
         min_size=1,
         max_size=10,
+        # hosted Postgres (Neon) drops idle connections: check before use, retire idle ones (see db.pool)
+        check=AsyncConnectionPool.check_connection,
+        max_idle=120,
         open=False,
         kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
     )
