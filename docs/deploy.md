@@ -6,13 +6,15 @@ A live demo at a permanent link like `https://badebhai.onrender.com`, on free ti
 |---|---|---|
 | Web app (API + UI) | **Render** free web service (512 MB) | serves requests; nothing heavy runs on it |
 | Database + vector search | **Neon** free Postgres (pgvector) | keeps the index across restarts |
-| Model and embeddings | **Google Gemini** free API (OpenAI-compatible) | a 512 MB box cannot run a model |
+| Model | **Google Gemini** free API (OpenAI-compatible) | a 512 MB box cannot run a model |
+| Query embeddings | `bge-small-en-v1.5` via ONNX Runtime, on the instance | no embedding API quota to run out of |
 
 Visitors get the full UI on two pre-indexed repositories (psf/requests and sindresorhus/ky): the agent,
 verified citations, code viewer, codebase map and repo comparison. Demo mode fixes the repositories
-and allows 10 questions per visitor per hour (300 per day in total), so the free API quota cannot be
-drained. Rehearsed locally in a container capped at 512 MB: about 135 MB in use, an agent answer with
-8/8 verified citations, and a restart that restored the git clone in seconds without re-indexing.
+and allows 10 new questions per visitor per hour (300 per day in total), so the free API quota cannot
+be drained; answers already in the cache are instant and not counted. Measured on the live instance:
+about 320 MB in use by the process at idle (`GET /health` reports it), agent answers with every
+citation verified, and a restart that restores the git clones in about 20 seconds without re-indexing.
 
 Check each service's free tier when you sign up; free tiers change.
 

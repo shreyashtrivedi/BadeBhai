@@ -12,6 +12,12 @@ It is an agentic RAG system: a LangGraph agent decomposes the question, calls da
 separate **MCP servers**, grades its own evidence (re-planning weak searches), and writes a cited
 answer, or says "insufficient evidence" when the repository does not support one.
 
+**Try it:** [live demo](https://badebhai.onrender.com/ui/), with two ready-to-ask repositories
+(`psf/requests` and `sindresorhus/ky`) and every feature: cited answers, the code viewer, the codebase
+map, commit history and repo comparison. It runs on free hosting, so after a quiet spell the first
+visit takes about a minute to wake up. To add and remove your own repositories, including private
+ones, [run it on your machine](#quick-start) (free, three commands).
+
 ![BadeBhai answering a question about psf/requests with verified citations](docs/screenshot.png)
 
 Real output from the default local model (`qwen3:4b-instruct` on a laptop RTX 3050 with 4 GB VRAM):
@@ -31,16 +37,17 @@ BadeBhai: The retry logic was added to enable automatic retries for failed HTTP 
 ```
 
 ## Contents
-[Quick start](#quick-start) · [Public demo](#public-demo-in-the-cloud-free) · [Completely free](#completely-free) · [Architecture](#architecture) ·
+[Quick start](#quick-start) · [Live demo](#live-demo) · [Completely free](#completely-free) · [Architecture](#architecture) ·
 [Using it](#using-it) · [How it works](#how-it-works) · [Evaluation](#evaluation) ·
 [Sharing it with a team](#sharing-it-with-a-team) · [Configuration](#configuration) · [Development](#development) ·
 [Limitations and next steps](#limitations-and-next-steps)
 
 ## Quick start
 
-**Docker (one command, no keys needed):**
+**Docker (no keys needed):**
 
 ```bash
+git clone https://github.com/shreyashtrivedi/BadeBhai && cd BadeBhai
 docker compose up --build                                             # CPU
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA GPU: much faster
 ```
@@ -107,8 +114,9 @@ and small businesses; Docker Engine on Linux and Podman are free for everyone.)
 in about 45 s (median over the 38-question eval). `qwen2.5:3b` fits fully on that GPU and is 3x faster, but in testing it graded
 every evidence item 0.0, so it is not recommended. With 8 GB+ VRAM, a 7-14B instruct model is a
 better choice; with no GPU everything still works, just slower. Use an *instruct* (non-thinking)
-model: reasoning models spend minutes thinking on every step. Paid Claude remains available as an
-optional extra (`uv sync --extra anthropic`, `LLM_PROVIDER=anthropic`).
+model: reasoning models spend minutes thinking on every step. Any OpenAI-compatible API also works
+(`LLM_PROVIDER=openai`, e.g. Gemini's free tier, as the live demo uses), and a paid API provider is
+available as an optional extra (`uv sync --extra anthropic`, `LLM_PROVIDER=anthropic`).
 
 Try: *Where is authentication handled?* · *Why was the retry logic added, and is it related to any
 open issues?* · *What changed in src/requests between 2024-05-01 and 2024-05-31?* · *Which files would
@@ -197,8 +205,8 @@ that keeps citations into both, e.g. *"How do Flask and FastAPI handle request v
 PRs, and an optional Slack command `/badebhai ...` answers in a channel. Both are off by default;
 setup in [docs/integrations.md](docs/integrations.md).
 
-**From your editor**: Claude Code, Cursor, VS Code and other MCP clients can ask BadeBhai directly
-(`ask`, `list_repos`, `add_repo`) or use its raw search tools. Setup: [docs/editors.md](docs/editors.md).
+**From your editor**: any editor or tool that speaks MCP can ask BadeBhai directly (`ask`,
+`list_repos`, `add_repo`) or use its raw search tools. Setup: [docs/editors.md](docs/editors.md).
 
 **API**
 
@@ -381,17 +389,33 @@ Earlier retrieval-only work:
   `bge-reranker-base`) took minutes per question on the laptop CPU, too slow to be useful. So it stays
   off by default; the hook is there for machines where it is fast, and the eval says whether it helps.
 
-## Public demo in the cloud (free)
+## Live demo
 
-The hosted demo runs on free tiers only: the app on a **Render** free web service, the index in
-**Neon** free Postgres (pgvector), and the model plus embeddings from **Gemini**'s free API through
-the OpenAI-compatible provider (a 512 MB box cannot run a model). Demo mode keeps it safe to leave
-public: fixed repositories, 10 questions per visitor per hour, 300 per day in total. A restart keeps
-the index and only re-clones the repositories. Rehearsed in a 512 MB container: ~135 MB used.
-Step by step: [docs/deploy.md](docs/deploy.md).
+**[badebhai.onrender.com](https://badebhai.onrender.com/ui/)** runs on free tiers only, and shows what
+BadeBhai does on two pre-indexed repositories (`psf/requests` at v2.32.3, `sindresorhus/ky` at v2.2.0).
+Your own copy has none of its limits (any repositories, private code, a local model, your GPU).
 
-`LLM_PROVIDER=openai` and `EMBEDDING_PROVIDER=openai` also work with Groq, OpenRouter, a local LM
-Studio, or Ollama's `/v1` endpoint.
+| Part | Free service | Notes |
+|---|---|---|
+| API + web UI | **Render** web service (512 MB, 0.1 CPU) | serves questions only; sleeps after 15 idle minutes |
+| Index, cache, conversations | **Neon** Postgres with pgvector | the index survives restarts; a restart only re-clones the repos (about 20 s) |
+| Model | **Gemini**'s free API through the OpenAI-compatible provider | an overloaded, hung or out-of-quota model is set aside and the next of several free models answers |
+| Query embeddings | `bge-small-en-v1.5` via ONNX Runtime on the instance | the same model the repos were indexed with |
+
+How it fits in 512 MB:
+* **Indexing happens elsewhere.** Embedding a repository on 0.1 CPU would take hours and runs out of
+  memory, so the demo repositories are indexed from a laptop straight into Neon
+  (`scripts/index_into_neon.sh`, same embedding settings). The instance only answers questions.
+* **Measured, not guessed.** `GET /health` reports memory in use: about 320 MB for the process at idle.
+  On small containers git runs single-threaded with small caches, glibc malloc arenas are capped and
+  freed memory is returned to the OS.
+* **Safe to leave public.** Demo mode fixes the repositories and allows 10 new questions per visitor
+  per hour and 300 per day. Repeated questions (same question, same commit) come from the answer cache
+  instantly and do not count. Hosted Postgres drops idle connections, so every pooled connection is
+  checked before use.
+
+Step by step: [docs/deploy.md](docs/deploy.md). `LLM_PROVIDER=openai` and `EMBEDDING_PROVIDER=openai`
+also work with Groq, OpenRouter, a local LM Studio, or Ollama's `/v1` endpoint.
 
 ## Sharing it with a team
 
@@ -435,7 +459,9 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` (free, local), `anthropic` (optional extra, paid) |
+| `LLM_PROVIDER` | `ollama` | `ollama` (free, local), `openai` (any OpenAI-compatible API: Gemini, Groq, OpenRouter, LM Studio), `anthropic` (optional extra, paid) |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `LLM_MODEL` | (none) | the OpenAI-compatible endpoint, its key and model |
+| `OPENAI_FALLBACK_MODELS` | (none; a known-good list for Gemini) | comma-separated models that answer while `LLM_MODEL` is overloaded, hung or out of quota |
 | `OLLAMA_MODEL` / `OLLAMA_FAST_MODEL` | `qwen3:4b-instruct` / same | main model; optional model for decompose/grade/rewrite/memory (keep empty on small GPUs: swapping models is slow) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | compose sets `http://ollama:11434` |
 | `OLLAMA_NUM_CTX` | `8192` | context window; evidence budgets scale with it (raise it if your GPU has room) |
@@ -454,6 +480,7 @@ All settings come from environment variables or `.env` ([.env.example](.env.exam
 | `SYNC_POLL_INTERVAL_S` | `0` | poll for new commits every N seconds (0 = off) |
 | `AUTO_INGEST_REPO` | (none; compose sets `psf/requests@v2.32.3`) | ingest on startup if missing |
 | `ANSWER_CACHE_TTL_HOURS` | `168` | reuse answers to the same question on the same commit (0 disables) |
+| `DEMO_MODE` / `DEMO_ASKS_PER_HOUR` / `DEMO_ASKS_PER_DAY` | `false` / `10` / `300` | public demo: fixed repositories and question limits (cached answers are not counted) |
 | `RERANKER` / `RERANK_CANDIDATES` / `RERANK_WEIGHT` | (off) / `30` / `0.7` | optional local cross-encoder over the top hybrid-search candidates (see Evaluation) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / (none) | LangSmith traces of every graph node and LLM call; otherwise JSON logs |
 
@@ -464,7 +491,7 @@ with `PROMPT_VERSION_<NAME>=N`.
 
 ```bash
 docker compose up -d db
-uv run pytest                        # 193 tests; DB tests use a separate `badebhai_test` database
+uv run pytest                        # 209 tests; DB tests use a separate `badebhai_test` database
 uv run ruff check . && uv run ruff format --check .
 RUN_LIVE=1 uv run pytest -m live     # 2 tests against the real local model (free; needs Ollama running)
 ```
@@ -488,7 +515,7 @@ badebhai/
   mcp_servers/  code_search, git_history, docs (+ GitHub client)
   ingestion/    chunker, filters, secret redaction, indexer, webhook, sync
   retrieval/    hybrid search
-  llm/          provider interface, Ollama (default) and optional Claude implementations, fake
+  llm/          provider interface: Ollama (default), OpenAI-compatible APIs, an optional paid API, fake
   evals/        golden set, runner, metrics, judge, reports
   ui/           web UI served at /
 tests/          unit + integration
@@ -508,8 +535,12 @@ tests/          unit + integration
   native Ollama install on Windows avoids the WSL2 layer.
 - The LLM judge in the eval is the same small local model, so correctness scores are a noisy signal;
   `badebhai eval --judge-model <larger model>` uses a stronger judge if you have one.
-- **No authentication.** `user_id` is supplied by the client, so anyone who knows a user id can read
-  or delete that user's memories. Fine for a local demo, not for a shared deployment.
+- **Without `AUTH_ENABLED`, there is no sign-in.** `user_id` is supplied by the client, so anyone who
+  knows a user id can read or delete that user's memories. Fine on your own machine; turn on accounts
+  ([Sharing it with a team](#sharing-it-with-a-team)) before sharing a copy.
+- **The free live demo is a showcase, not a workspace.** Its repositories are fixed (indexing needs
+  more than its 512 MB / 0.1 CPU), answers depend on a free model API that is sometimes busy, and it
+  sleeps when idle. Running your own copy removes all three.
 - The verifier proves that cited evidence is real and unchanged; it does not prove that the claim
   follows from the cited text (entailment).
 - Issues and PRs come from GitHub's keyword search API (10 searches/minute unauthenticated), not
