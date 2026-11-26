@@ -365,8 +365,35 @@ def create_app(
             "version": __version__,
             "uptime_s": int(time.time() - request.app.state.started_at),
         }
+        out.update(_memory_mb())
         if deep:
             out["repos"] = len(await asyncio.to_thread(repo_db.list_repos, request.app.state.pool))
+        return out
+
+    def _memory_mb() -> dict[str, int]:
+        """Memory in use, for watching a small instance: the container's total (cgroup, includes git
+        and other child processes), its limit, and this process's resident set. Linux only."""
+        out: dict[str, int] = {}
+        for key, path in (
+            ("mem_container_mb", "/sys/fs/cgroup/memory.current"),
+            ("mem_container_mb", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+            ("mem_limit_mb", "/sys/fs/cgroup/memory.max"),
+            ("mem_limit_mb", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        ):
+            if key in out:
+                continue
+            try:
+                raw = open(path).read().strip()  # noqa: SIM115
+            except OSError:
+                continue
+            if raw.isdigit() and int(raw) < 1 << 50:
+                out[key] = int(raw) >> 20
+        try:
+            for line in open("/proc/self/status"):  # noqa: SIM115
+                if line.startswith("VmRSS:"):
+                    out["mem_process_mb"] = int(line.split()[1]) >> 10
+        except OSError:
+            pass
         return out
 
     @app.get("/tools")
