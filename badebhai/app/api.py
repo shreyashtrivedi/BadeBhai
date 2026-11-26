@@ -146,11 +146,10 @@ def create_app(
         stop = asyncio.Event()
         background: list[asyncio.Task] = []
         background.append(asyncio.create_task(_resume_bot_replies(app)))
-        background.append(asyncio.create_task(_restore_clones(app)))
+        sources = [x.strip() for x in (s.auto_ingest_repo or "").split(",") if x.strip()]
+        background.append(asyncio.create_task(_startup_repos(app, sources)))
         if s.sync_poll_interval_s > 0:
             background.append(asyncio.create_task(poll_forever(st.indexer, s.sync_poll_interval_s, stop)))
-        for source in [x.strip() for x in (s.auto_ingest_repo or "").split(",") if x.strip()]:
-            background.append(asyncio.create_task(_auto_ingest(app, source)))
         log.info(
             "api ready",
             extra={
@@ -313,23 +312,37 @@ def create_app(
             except Exception:
                 log.exception("could not restore clone", extra={"repo": repo.name})
 
-    async def _auto_ingest(app: FastAPI, source: str) -> None:
+    async def _startup_repos(app: FastAPI, sources: list[str]) -> None:
+        """Restore missing clones, then index the auto-ingest repos one at a time: concurrent clones and
+        embedding batches trip over each other and spike memory on a small instance."""
+        await _restore_clones(app)
+        for source in sources:
+            try:
+                job_id = await _auto_ingest(app, source)
+            except Exception:
+                log.exception("auto-ingest failed", extra={"source": source})
+                continue
+            while job_id and app.state.jobs.get(job_id, {}).get("status") == "running":  # noqa: ASYNC110 (job runs in a thread)
+                await asyncio.sleep(2)
+
+    async def _auto_ingest(app: FastAPI, source: str) -> str | None:
         from badebhai.ingestion.sources import parse_source
 
         src = parse_source(source, s.repos_dir)
         existing = await asyncio.to_thread(repo_db.get_repo, app.state.pool, src.name)
-        if existing is not None:
+        if existing is not None and existing.last_indexed_commit:
             if existing.embedding_model != app.state.indexer.signature:  # new embedder / chunker version
                 log.info("index signature changed; re-syncing", extra={"repo": existing.name})
-                _start_job(
+                return _start_job(
                     app,
                     "sync",
                     lambda p: app.state.indexer.sync(existing.name, progress=p),
                     repo=existing.name,
                 )
-            return
+            return None
+        # new, or an earlier indexing run never finished: (re)index it in full
         log.info("auto-ingesting", extra={"source": source})
-        _start_job(
+        return _start_job(
             app,
             "ingest",
             lambda p: app.state.indexer.ingest(source, progress=p),
