@@ -344,6 +344,7 @@ dialog#login-dialog::backdrop { background: var(--bg); }
   .status { padding: 0 14px 6px; }
   .side { min-height: 40vh; }
   .panel { overflow: visible; padding: 12px 14px 24px; }
-  pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
+  pre.cmd { white-space: pre-wrap; font-size: 11px; padding: 10px 12px; }  /* the clone URL fits on its own line */
   #local-dialog .add { padding: 16px 16px 18px; }
+  #local-dialog .hint code { overflow-wrap: anywhere; }
 }
