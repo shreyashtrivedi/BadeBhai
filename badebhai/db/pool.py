@@ -92,8 +92,18 @@ def get_pool(settings: Settings | None = None) -> ConnectionPool:
         pool = _pools.get(s.database_url)
         if pool is None:
             _ensure_schema_or_reset(s)
+            # Hosted Postgres (Neon's free tier suspends after ~5 idle minutes) drops idle connections:
+            # check each one before handing it out (a dead one is replaced, not returned as a 500) and
+            # retire idle ones before the server does.
             pool = ConnectionPool(
-                s.database_url, min_size=1, max_size=10, configure=_configure, open=True, timeout=30
+                s.database_url,
+                min_size=1,
+                max_size=10,
+                configure=_configure,
+                check=ConnectionPool.check_connection,
+                max_idle=120,
+                open=True,
+                timeout=30,
             )
             _pools[s.database_url] = pool
             log.info("db pool ready")

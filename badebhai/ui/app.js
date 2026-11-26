@@ -124,7 +124,14 @@ function setStatus(text, isError = false) { const s = $("#status"); s.textConten
 async function ask() {
   const question = $("#question").value.trim();
   if (!question || state.busy) return;
-  const repo = $("#repo").value;
+  let repo = $("#repo").value;
+  if (!repo && state.setup.demo_mode) {  // the demo always has repos: the list just failed to load (waking up)
+    setStatus("Loading the demo repositories…");
+    await loadRepos();
+    repo = $("#repo").value;
+    if (!repo) { setStatus("The demo server is waking up. Try again in a few seconds.", true); return; }
+    setStatus("");
+  }
   if (!repo) { setStatus("Add a repository first.", true); openAdd(); return; }
   state.busy = true; $("#send").disabled = true; $("#question").value = "";
   $("#empty")?.remove();
@@ -323,7 +330,16 @@ async function loadRepos(select) {
   const sel = $("#repo");
   try {
     state.repos = await api("/repos");
-  } catch (e) { setStatus(`Could not load repositories: ${e.message}`, true); return; }
+  } catch (e) {
+    if (state.setup?.demo_mode && (state.repoRetries = (state.repoRetries || 0) + 1) <= 5) {
+      setStatus("Loading the demo repositories…");  // a sleeping server's first request can fail
+      setTimeout(() => loadRepos(select).then(() => { if ($("#repo").value) setStatus(""); }), 3000);
+      return;
+    }
+    setStatus(`Could not load repositories: ${e.message}`, true);
+    return;
+  }
+  state.repoRetries = 0;
   const prev = select || sel.value;
   sel.innerHTML = state.repos.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}${r.ref ? " @ " + esc(r.ref) : ""}${r.last_indexed_commit ? "" : " (still being added…)"}</option>`).join("");
   if (prev && state.repos.some((r) => r.name === prev)) sel.value = prev;
