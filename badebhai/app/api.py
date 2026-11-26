@@ -115,6 +115,7 @@ def create_app(
         await asyncio.to_thread(st.embedder.embed_query, "warm up")
         st.llm = llm or get_llm(s)
         st.jobs = {}
+        st.started_at = time.time()
         st.limiter = auth.DbUsageLimiter(st.pool) if s.auth_enabled else auth.UsageLimiter()
         st.http = httpx.AsyncClient(timeout=15.0, transport=http_transport)
         st.bot_tasks = set()
@@ -352,9 +353,17 @@ def create_app(
 
     # ------------------------------------------------------------------ routes
     @app.get("/health")
-    async def health(request: Request) -> dict[str, Any]:
-        repos = await asyncio.to_thread(repo_db.list_repos, request.app.state.pool)
-        return {"status": "ok", "version": __version__, "repos": len(repos)}
+    async def health(request: Request, deep: bool = False) -> dict[str, Any]:
+        """Liveness, answered without the database so a busy small instance still passes health checks
+        (Render restarts a service whose health check times out). ?deep=1 also counts repos."""
+        out: dict[str, Any] = {
+            "status": "ok",
+            "version": __version__,
+            "uptime_s": int(time.time() - request.app.state.started_at),
+        }
+        if deep:
+            out["repos"] = len(await asyncio.to_thread(repo_db.list_repos, request.app.state.pool))
+        return out
 
     @app.get("/tools")
     async def tools(request: Request) -> dict[str, Any]:

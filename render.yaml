@@ -44,6 +44,8 @@ services:
         value: "16"
       - key: EMBEDDING_RESET_ON_MISMATCH
         value: "true"
+      - key: GIT_CLONE_FILTER # full history, file contents on demand: light on a 0.1-CPU instance
+        value: blob:none
       - key: MCP_TRANSPORT
         value: inmemory
       - key: DEMO_MODE

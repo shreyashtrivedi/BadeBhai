@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,11 @@ _GITHUB = re.compile(
 )
 _REF = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_./+-]{0,199}$")  # never starts with '-': no git option injection
 _REMOTE = re.compile(r"^(?:https?://|ssh://|git@)[^\s]+$")
+# GIT_CLONE_FILTER=blob:none: full commit history, file contents fetched only when needed. Much
+# lighter for a small hosted instance; git log/blame still work (they fetch what they read).
+_CLONE_FILTER = os.environ.get("GIT_CLONE_FILTER", "").strip()
+# git runs at low priority on POSIX so it cannot starve the web server on a fractional-CPU host.
+_NICE = ["nice", "-n", "10"] if os.name == "posix" and shutil.which("nice") else []
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
 
 
@@ -50,7 +56,7 @@ def git(
     cwd: Path | str, *args: str, timeout: float = 300, check: bool = True, token: str | None = None
 ) -> str:
     proc = subprocess.run(
-        ["git", "-c", "core.quotepath=off", *args],
+        [*_NICE, "git", "-c", "core.quotepath=off", *args],
         cwd=str(cwd),
         capture_output=True,
         timeout=timeout,
@@ -141,7 +147,17 @@ def ensure_clone(src: RepoSource, token: str | None = None) -> None:
     if not (src.local_path / ".git").exists():
         src.local_path.parent.mkdir(parents=True, exist_ok=True)
         log.info("cloning", extra={"url": src.url, "dest": str(src.local_path)})
-        git(src.local_path.parent, "clone", "--quiet", src.url, str(src.local_path), timeout=900, token=token)
+        extra = [f"--filter={_CLONE_FILTER}"] if _CLONE_FILTER else []
+        git(
+            src.local_path.parent,
+            "clone",
+            "--quiet",
+            *extra,
+            src.url,
+            str(src.local_path),
+            timeout=900,
+            token=token,
+        )
     if src.ref is None:
         src.ref = git(src.local_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
     checkout_ref(src.local_path, src.ref)
