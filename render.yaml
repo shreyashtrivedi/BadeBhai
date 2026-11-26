@@ -3,10 +3,10 @@
 # Everything heavy is offloaded to free services, so the 512 MB free instance only serves requests:
 #   * database: Neon free Postgres with pgvector (DATABASE_URL)
 #   * model: Google Gemini free tier through its OpenAI-compatible API (OPENAI_API_KEY); a retired
-#     LLM_MODEL is replaced automatically by the newest available Flash model
+#     LLM_MODEL is replaced automatically, and a busy one by OPENAI_FALLBACK_MODELS
 #   * embeddings: bge-small via ONNX (fastembed) on the instance itself
-# The demo repositories are indexed on the first start (a few minutes) and kept in Neon; after a
-# restart only their git clones are restored (seconds). See docs/deploy.md.
+# The demo repositories are indexed into Neon from a laptop (scripts/index_into_neon.sh): embedding
+# them here runs the instance out of memory. On start only their git clones are restored. See docs/deploy.md.
 services:
   - type: web
     name: badebhai
@@ -28,8 +28,10 @@ services:
         value: openai
       - key: OPENAI_BASE_URL
         value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: LLM_MODEL
-        value: gemini-2.5-flash
+      - key: LLM_MODEL # gemini-2.5-flash is deprecated and constantly "high demand" on the free tier
+        value: gemini-3.6-flash
+      - key: OPENAI_FALLBACK_MODELS # answer with these, in order, while a model is overloaded / out of quota
+        value: gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-3-flash-preview
       - key: OPENAI_FREE
         value: "true"
       - key: OPENAI_MAX_RPM

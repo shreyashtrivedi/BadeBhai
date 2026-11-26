@@ -188,18 +188,64 @@ async def test_daily_quota_switches_model_but_per_minute_limit_waits(monkeypatch
     assert used == ["main", "backup-a"]
 
 
-async def test_every_model_busy_reports_the_error(monkeypatch):
+async def test_every_model_busy_reports_what_was_tried(monkeypatch):
     async def no_sleep(_):
         return None
 
     monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(500, json={})
         return httpx.Response(503, json={"error": {"message": "high demand"}})
 
     p = _provider(handler, llm_model="main", openai_fallback_models="backup")
-    with pytest.raises(Exception, match="503"):
+    with pytest.raises(Exception, match=r"503 \(tried main: 503; backup: 503"):
         await p.complete(purpose="t", system="s", messages=[])
+
+
+async def test_standin_without_free_quota_or_gone_is_skipped(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "main":
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        if model == "paid-only":
+            msg = "Quota exceeded for metric: generate_content_free_tier_requests, limit: 0, model: paid-only"
+            return httpx.Response(429, json={"error": {"message": msg}})
+        if model == "retired":
+            return httpx.Response(404, json={"error": {"message": "not found"}})
+        return _reply("ok")
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="paid-only,retired,lite")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "ok"
+    assert used == ["main", "paid-only", "retired", "lite"]
+
+
+async def test_stream_on_overloaded_model_answers_from_a_standin(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "main":
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return _reply("from backup")
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="backup")
+    out = "".join([piece async for piece in p.stream(purpose="t", system="s", messages=[])])
+    assert out == "from backup"
+    assert used == ["main", "backup"]  # the busy model is not asked twice
 
 
 async def test_retired_model_is_replaced_by_a_current_flash_model():

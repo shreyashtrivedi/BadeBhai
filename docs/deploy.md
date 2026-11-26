@@ -47,10 +47,11 @@ That link goes on your resume and in the README.
 * **Sleeping:** free Render services sleep after about 15 minutes without visitors; the next visit
   wakes it in about a minute. The index lives in Neon, so after a restart only the git clones are
   re-downloaded (seconds).
-* **Model:** `LLM_MODEL=gemini-2.5-flash`. When it is overloaded (503) or out of daily quota, the
-  next best Flash model the API lists answers instead for five minutes (or `OPENAI_FALLBACK_MODELS`,
-  comma-separated). Embeddings: `BAAI/bge-small-en-v1.5` on the instance (ONNX, 384 dimensions); if
-  you change the embedding model, re-run `scripts/index_into_neon.sh` with the same settings.
+* **Model:** `LLM_MODEL=gemini-3.6-flash`. When it is overloaded (503) or out of daily quota, the
+  next model in `OPENAI_FALLBACK_MODELS` (then the best Flash model the API lists) answers instead
+  for five minutes; a model with no free quota for your key is skipped for six hours.
+* **Embeddings:** `BAAI/bge-small-en-v1.5` on the instance (ONNX, 384 dimensions). If you change the
+  embedding model, re-run `scripts/index_into_neon.sh` with the same settings.
 * **Other APIs:** any OpenAI-compatible API works: Groq (`https://api.groq.com/openai/v1`, chat only)
   or OpenRouter (`https://openrouter.ai/api/v1`); set `OPENAI_BASE_URL`, `LLM_MODEL` and the key.
 * **Limits:** `DEMO_ASKS_PER_HOUR`, `DEMO_ASKS_PER_DAY` and `OPENAI_MAX_RPM` are environment variables.

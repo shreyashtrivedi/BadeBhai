@@ -46,7 +46,9 @@ log = get_logger(__name__)
 _MAX_429_WAIT_S = 45.0
 _STANDIN_FOR_S = 300.0  # an overloaded / out-of-quota model is skipped this long, then tried again
 _NOT_CHAT = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo", "exp")
+_UNUSABLE_FOR_S = 6 * 3600.0  # a stand-in that is gone, or has no free quota for this key
 _DAILY_QUOTA = re.compile(r"per\s*day|perday|daily", re.I)
+_NO_FREE_QUOTA = re.compile(r"limit:\s*0\b", re.I)  # Gemini: "... free_tier_requests, limit: 0"
 
 
 def _retry_after(r: httpx.Response) -> float:
@@ -121,8 +123,10 @@ class OpenAICompatProvider(LLMProvider):
                 r = await self.client.get("models")
                 ids = [m.get("id", "") for m in r.json().get("data", [])] if r.status_code < 400 else []
             except (httpx.HTTPError, ValueError):
+                log.warning("could not list the model API's models")
                 return []
             self._models = [i.split("/", 1)[-1] for i in ids if i]
+            log.info("model API lists models", extra={"status": r.status_code, "count": len(self._models)})
         return self._models
 
     async def _pick_replacement(self, missing: str) -> str | None:
@@ -136,21 +140,26 @@ class OpenAICompatProvider(LLMProvider):
             self._replacement = choice
         return choice
 
-    async def _pick_standin(self, failing: str, why: str) -> str | None:
-        """`failing` is overloaded or out of quota: skip it for a while and answer with another model
-        (OPENAI_FALLBACK_MODELS if set, otherwise the best other chat model the API lists)."""
+    async def _pick_standin(self, failing: str, why: str, skip_for_s: float = _STANDIN_FOR_S) -> str | None:
+        """`failing` is overloaded or out of quota: skip it for a while and answer with another model,
+        from OPENAI_FALLBACK_MODELS first, then the best other chat models the API lists."""
         now = time.monotonic()
-        self._down[failing] = now + _STANDIN_FOR_S
+        self._down[failing] = now + skip_for_s
+
+        def usable(models: list[str]) -> str | None:
+            return next((m for m in models if m != failing and self._down.get(m, 0) <= now), None)
+
         configured = [m.strip() for m in (self.s.openai_fallback_models or "").split(",") if m.strip()]
-        pool = configured or rank_standins(await self._model_ids(), failing.split("-")[0])
-        for model in pool:
-            if model != failing and self._down.get(model, 0) <= now:
-                log.warning(
-                    "model busy; using a stand-in", extra={"busy": failing, "using": model, "why": why}
-                )
-                self._standin[failing] = model
-                return model
-        return None
+        model = usable(configured)
+        if model is None:
+            listed = rank_standins(await self._model_ids(), failing.split("-")[0])
+            model = usable([m for m in listed if m not in configured])
+        if model is None:
+            log.warning("model busy and no stand-in left", extra={"busy": failing, "why": why})
+            return None
+        log.warning("model busy; using a stand-in", extra={"busy": failing, "using": model, "why": why})
+        self._standin[failing] = model
+        return model
 
     # ---------- plumbing ----------
     async def _throttle(self) -> None:
@@ -193,18 +202,21 @@ class OpenAICompatProvider(LLMProvider):
             )
         )
 
-    def _error(self, status: int, text: str) -> LLMError:
+    def _error(self, status: int, text: str, tried: list[str] | None = None) -> LLMError:
         if status in (401, 403):
             return LLMUnavailable(f"The model API rejected the key (HTTP {status}). Check OPENAI_API_KEY.")
         if status == 404:
             return LLMUnavailable(
                 f"The model API has no model {self.s.main_model!r} (HTTP 404). Check LLM_MODEL."
             )
-        return LLMError(f"Model API error {status}: {text[:300]}")
+        attempts = f" (tried {'; '.join(tried)})" if tried and len(tried) > 1 else ""
+        return LLMError(f"Model API error {status}{attempts}: {text[:300]}")
 
     async def _post(self, purpose: str, body: dict) -> dict:
         model = body["model"]
-        for attempt in range(1, 7):
+        tried: list[str] = []  # "model: status" per refused attempt, reported if every attempt fails
+        waits = server_retries = 0
+        for _ in range(8):
             await self._throttle()
             try:
                 with Timer() as t:
@@ -215,33 +227,41 @@ class OpenAICompatProvider(LLMProvider):
                 raise LLMError(
                     f"The model API timed out after {self.s.openai_timeout_s:.0f}s on {purpose}"
                 ) from e
+            if r.status_code < 400:
+                data = r.json()
+                self._record(purpose, model, data.get("usage"), t.ms)
+                return data
+            tried.append(f"{model}: {r.status_code}")
             retry_after = _retry_after(r)
-            # Overloaded (503) or out of quota for the day: waiting will not help, another model will.
-            if r.status_code == 503 or (
+            standin = None
+            if (r.status_code == 404 and model in self._standin.values()) or (
+                r.status_code == 429 and _NO_FREE_QUOTA.search(r.text)
+            ):  # this model cannot serve this key at all (gone, or no free quota): skip it for hours
+                standin = await self._pick_standin(model, f"HTTP {r.status_code}", _UNUSABLE_FOR_S)
+            elif r.status_code == 503 or (
                 r.status_code == 429 and (retry_after > _MAX_429_WAIT_S or _DAILY_QUOTA.search(r.text))
-            ):
+            ):  # overloaded, or out of quota for the day: waiting will not help, another model may
                 why = "overloaded" if r.status_code == 503 else "out of quota"
-                if attempt < 6 and (standin := await self._pick_standin(model, why)):
-                    body, model = {**body, "model": standin}, standin
-                    continue
-            if r.status_code == 429 and attempt < 4:
-                wait = min(_MAX_429_WAIT_S, retry_after or 2**attempt)
+                standin = await self._pick_standin(model, why)
+            if standin:
+                body, model = {**body, "model": standin}, standin
+                continue
+            if r.status_code == 429 and waits < 3:
+                waits += 1
+                wait = min(_MAX_429_WAIT_S, retry_after or 2**waits)
                 log.warning("model API rate limited, waiting", extra={"purpose": purpose, "wait_s": wait})
                 await asyncio.sleep(wait)
                 continue
-            if r.status_code >= 500 and attempt < 3:
-                await asyncio.sleep(attempt)
+            if r.status_code >= 500 and server_retries < 2:
+                server_retries += 1
+                await asyncio.sleep(server_retries)
                 continue
             if r.status_code == 404 and not self._replacement and await self._pick_replacement(model):
                 body = {**body, "model": self._replacement}
                 model = self._replacement
                 continue
-            if r.status_code >= 400:
-                raise self._error(r.status_code, r.text)
-            data = r.json()
-            self._record(purpose, model, data.get("usage"), t.ms)
-            return data
-        raise LLMError(f"The model API kept rate limiting {purpose}; try again in a minute")
+            raise self._error(r.status_code, r.text, tried)
+        raise LLMError(f"The model API kept refusing {purpose} ({'; '.join(tried)}); try again in a minute")
 
     @staticmethod
     def _content(data: dict) -> str:
@@ -325,6 +345,8 @@ class OpenAICompatProvider(LLMProvider):
                     if r.status_code == 429 or r.status_code >= 500:
                         # nothing was streamed yet: let the non-streaming path wait and retry
                         await r.aread()
+                        if r.status_code == 503:  # overloaded: retry on a stand-in, not the busy model
+                            await self._pick_standin(model, "overloaded")
                         yield await self.complete(
                             purpose=purpose,
                             system=system,
