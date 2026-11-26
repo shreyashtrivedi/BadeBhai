@@ -62,3 +62,27 @@ def test_per_visitor_and_daily_limits(demo):
     assert _ask(demo, "2.2.2.2").status_code == 200  # another visitor; 3 answers today in total
     daily = _ask(demo, "3.3.3.3")
     assert daily.status_code == 429 and "daily quota" in daily.json()["error"]
+
+
+def test_cached_answers_do_not_count_against_the_limits(db_settings, tiny_repo):
+    """Clicking an example question whose answer is cached costs no model call, so it is never limited."""
+    Indexer(db_settings).ingest(str(tiny_repo), name="tiny")
+    s = db_settings.model_copy(
+        update={
+            "demo_mode": True,
+            "demo_asks_per_hour": 1,
+            "demo_asks_per_day": 1,
+            "answer_cache_ttl_hours": 24,
+        }
+    )
+    with TestClient(create_app(s, llm=FakeLLM({"naive": _cite}), toolbox_factory=toolbox_factory(s))) as c:
+        first = _ask(c, "4.4.4.4")
+        assert first.status_code == 200 and not first.json().get("cached")
+        again = [_ask(c, "4.4.4.4") for _ in range(3)]  # same visitor, over the hourly limit
+        assert all(r.status_code == 200 and r.json()["cached"] for r in again)
+        other = c.post(  # a new question still needs the model and is limited
+            "/ask",
+            json={"question": "Where are passwords hashed?", "repo": "tiny", "mode": "naive"},
+            headers={"X-Forwarded-For": "4.4.4.4, 10.0.0.1"},
+        )
+        assert other.status_code == 429

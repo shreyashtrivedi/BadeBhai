@@ -727,19 +727,27 @@ def create_app(
                 cache.store, st.pool, repo.id, repo.last_indexed_commit, req.mode, req.question, payload
             )
 
-    def _ask_guard(request: Request, body: AskRequest) -> AskRequest:
+    def _ask_limits(request: Request) -> None:
         _demo_limit(request)
         _limit(request, "ask", s.asks_per_hour, 3600, "questions per hour")
-        return body.model_copy(update={"user_id": _uid(request, body.user_id)})
 
-    @app.post("/ask", response_model=AskResponse)
-    async def ask(request: Request, body: AskRequest) -> AskResponse:
-        body = _ask_guard(request, body)
+    async def _prepare_ask(request: Request, body: AskRequest):
+        """Resolve the asker, repo and route, and look in the answer cache. A cached answer costs no
+        model call, so only questions that need a new answer count against the rate limits."""
+        body = body.model_copy(update={"user_id": _uid(request, body.user_id)})
         repo = _repo(request, body.repo)
         st = request.app.state
         req, rt = _resolve_mode(body)
         use_cache = await _cache_allowed(st, req, repo)
-        if use_cache and (hit := await _from_cache(st, req, repo, rt)):
+        hit = await _from_cache(st, req, repo, rt) if use_cache else None
+        if hit is None:
+            _ask_limits(request)
+        return st, repo, req, rt, use_cache, hit
+
+    @app.post("/ask", response_model=AskResponse)
+    async def ask(request: Request, body: AskRequest) -> AskResponse:
+        st, repo, req, rt, use_cache, hit = await _prepare_ask(request, body)
+        if hit is not None:
             return hit
         with track_usage() as usage:
             if req.mode == "naive":
@@ -825,9 +833,7 @@ def create_app(
     @app.post("/ask/stream")
     async def ask_stream(request: Request, body: AskRequest) -> EventSourceResponse:
         """Server-sent events: start, step, tool, token ... then final (or error)."""
-        body = _ask_guard(request, body)
-        repo = _repo(request, body.repo)
-        st = request.app.state
+        st, repo, req, rt, use_cache, hit = await _prepare_ask(request, body)
 
         def final(resp: AskResponse) -> dict:
             return {
@@ -836,7 +842,6 @@ def create_app(
             }
 
         async def events():
-            req, rt = _resolve_mode(body)
             with track_usage() as usage:
                 try:
                     if rt:
@@ -848,8 +853,7 @@ def create_app(
                             "ms": 0,
                         }
                         yield {"event": "step", "data": json.dumps(step)}
-                    use_cache = await _cache_allowed(st, req, repo)
-                    if use_cache and (hit := await _from_cache(st, req, repo, rt)):
+                    if hit is not None:
                         yield final(hit)
                         return
                     if req.mode == "naive":
