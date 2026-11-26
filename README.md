@@ -111,8 +111,8 @@ Everything is open source and runs on your machine. (Docker Desktop is free for 
 and small businesses; Docker Engine on Linux and Podman are free for everyone.)
 
 **Picking a model.** The model is one setting (`OLLAMA_MODEL`). Measured on a laptop RTX 3050 with
-4 GB VRAM, `qwen3:4b-instruct` (81% on GPU) answers naive questions in about 17 s and agent questions
-in about 45 s (median over the 38-question eval). `qwen2.5:3b` fits fully on that GPU and is 3x faster, but in testing it graded
+4 GB VRAM, `qwen3:4b-instruct` (81% on GPU) answers naive questions in about 16 s and agent questions
+in about 44 s (median over the 38-question eval). `qwen2.5:3b` fits fully on that GPU and is 3x faster, but in testing it graded
 every evidence item 0.0, so it is not recommended. With 8 GB+ VRAM, a 7-14B instruct model is a
 better choice; with no GPU everything still works, just slower. Use an *instruct* (non-thinking)
 model: reasoning models spend minutes thinking on every step. Any OpenAI-compatible API also works
@@ -172,7 +172,7 @@ flowchart LR
 | Piece | Choice |
 |---|---|
 | Agent | LangGraph; state checkpointed per thread in Postgres (`AsyncPostgresSaver`) |
-| LLM | local open model via Ollama (default `qwen3:4b-instruct`) behind a small `LLMProvider` interface; JSON-schema constrained output for planning, grading and memory; streamed synthesis. Claude is an optional provider |
+| LLM | local open model via Ollama (default `qwen3:4b-instruct`) behind a small `LLMProvider` interface; JSON-schema constrained output for planning, grading and memory; streamed synthesis. OpenAI-compatible APIs and a paid API provider are optional |
 | Data sources | three MCP servers built with the official MCP Python SDK; the agent is an MCP client and discovers tools with `list_tools` |
 | Storage | one Postgres: pgvector HNSW + `tsvector` full-text (hybrid search with reciprocal rank fusion), files and hashes, memories, checkpoints |
 | Chunking | tree-sitter function/class chunks (Python, JS, TS/TSX, Go, Java, Rust), heading-based Markdown/RST sections, sliding windows otherwise |
@@ -304,42 +304,55 @@ uv run badebhai eval                      # full run; writes badebhai/evals/repo
 uv run badebhai eval --resume <run_id>    # continue an interrupted run (results are checkpointed)
 ```
 
+With Docker, run it inside the stack using the same compose files you started it with, e.g.
+`docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec api badebhai eval`. A
+`docker compose run` without the GPU file quietly recreates Ollama without the GPU.
+
 ### Results
 
 Full run, all 38 questions, everything local and free: `qwen3:4b-instruct` via Ollama (also the
-judge) on a laptop RTX 3050 with 4 GB VRAM
-([report](badebhai/evals/reports/20261125-114631.md)):
+judge) on a laptop RTX 3050 with 4 GB VRAM, re-run on 2026-11-26 with the current code
+([report](badebhai/evals/reports/20261126-135933.md); the previous run:
+[2026-11-25](badebhai/evals/reports/20261125-114631.md)):
 
 | Metric | Naive RAG (1 hybrid search + 1 LLM call) | Agentic pipeline |
 |---|---|---|
 | Retrieval hit@1 | 71.4% | **91.4%** |
-| Retrieval hit@3 | 91.4% | **97.1%** |
-| Retrieval hit@5 / hit@10 | 91.4% | **100%** |
-| Answer cites an expected file, commit or issue | 88.6% | **100%** |
-| Citation validity (verified / total) | 98.6% | 98.8% |
-| LLM-judge correctness, 0-1 (abstaining on an answerable question = 0) | 0.74 | **0.79** |
-| Says "insufficient evidence" on unanswerable questions | 3/3* | 3/3 |
+| Retrieval hit@3 / hit@5 / hit@10 | 91.4% | **97.1%** |
+| Answer cites an expected file, commit or issue | 88.6% | **97.1%** |
+| Citation validity (verified / total) | 98.5% | **100%** |
+| LLM-judge correctness, 0-1 (abstaining on an answerable question = 0) | 0.76 | **0.81** |
+| Says "insufficient evidence" on unanswerable questions | 3/3 | 3/3 |
 | Abstains on answerable questions | 0% | 0% |
-| Latency p50 | 16.8 s | 43.5 s |
-| LLM calls / MCP tool calls per question | 1 / 0 | 3.8 / 5.9 |
+| Latency p50 | 15.8 s | 44.0 s |
+| LLM calls / MCP tool calls per question | 1 / 0 | 3.6 / 5.7 |
 | Cost | $0 | $0 |
 
-Judge correctness by category (naive → agent): issues 0.88 → 1.00, planning 0.69 → 0.94, how-it-works
-0.60 → 0.85, location 0.80 → 0.84, docs 1.00 → 1.00, unanswerable 1.00 → 1.00, history 0.50 → 0.32.
+Judge correctness by category (naive → agent): issues 0.75 → 1.00, docs 0.83 → 1.00, planning 0.69 →
+0.81, history 0.50 → 0.64, location 0.84 → 0.82, how-it-works 0.80 → 0.68, unanswerable 1.00 → 1.00.
 
 How to read it:
-- **The agent finds the right evidence far more often** (hit@1 91% vs 71%; the expected source is in
-  its evidence for every answerable question). Naive hit@k tops out at 91.4% because 3 questions can
-  only be answered from commits or live issues, which a code/doc index cannot return.
-- **The answer-quality gap is smaller than the retrieval gap.** The judge is the same 4B model, and
-  it is noisy: it gave "incorrect" to an agent answer that named the exact expected commit. History
-  ("why"/"when") questions were the weak spot (0.32); see "History questions" below for what changed.
+- **The agent finds the right evidence far more often** (hit@1 91% vs 71%), and the expected source is
+  in its evidence for every answerable question but one (`hist-retry-consistency`, below). Naive hit@k
+  tops out at 91.4% because 3 questions can only be answered from commits or live issues, which a
+  code/doc index cannot return.
+- **Every one of the agent's citations checked out** against the real files and commits (100%).
+- **The answer-quality gap is smaller than the retrieval gap, and the judge is the reason to read the
+  per-category numbers loosely.** The judge is the same 4B model. In this run it scored the agent's
+  cookie answer 0.0, saying `extract_cookies_to_jar` is not called from `HTTPAdapter.build_response`
+  or the redirect code; requests calls it in both places (`adapters.py:388`, `sessions.py:240`). It
+  marked another answer down for citing files that "do not exist", although every agent citation was
+  verified. Single questions move by 0.25 to 1.0 between runs, so with 5 questions per category the
+  how-it-works dip (0.68) is within that noise. A stronger judge settles it:
+  `badebhai eval --judge-model <larger model>`.
+- **History, the weak spot in the previous run (0.32), is now 0.64.** The release-notes and date-window
+  tools work: "what security issue was fixed in 2.32.0" went from 0.0 to 1.0 and "what changed in May
+  2024" from 0.25 to 0.75. `hist-retry-consistency` still cites the wrong commit (judged 0.0).
 - **Latency p95 is not reported** because it measured the build machine, not the agent: Docker
-  Desktop's WSL2 GPU passthrough stalled several times during the run (the GPU sat idle while requests
-  hung), and the 5 agent answers over 2 minutes all fell in those windows. Without stalls agent
-  answers take about 30-110 s.
-- \*The abstention detector missed one correct naive refusal ("Requests does not manage WebSocket
-  connections") and reported 66.7%; the detector now recognises that phrasing.
+  Desktop's engine crashed three times during the run (it resumed from its checkpoints each time), and
+  after one restart the first five questions ran on the CPU (about 2-4 minutes each) until the GPU was
+  attached again. The p50 above leaves those five out. Without such stalls agent answers take about
+  30-110 s.
 
 **What the eval changed.** The first full run ([before](badebhai/evals/reports/20261125-090834-before-fixes.md))
 had the agent *behind* naive on retrieval (hit@1 69.7%) and abstaining on 15% of answerable
@@ -358,7 +371,7 @@ Earlier retrieval-only work:
   grouping runs of tiny definitions such as the 25 small exception classes into one chunk
   ([before](badebhai/evals/reports/20261124-230021-before-interleave.md),
   [after](badebhai/evals/reports/20261124-230610.md)).
-- **History questions: 0.32 → 0.57 (agent judge, 7 questions).** Three causes, all fixed in code:
+- **History questions: 0.32 → 0.57 (agent judge, 7 questions; 0.64 in the latest full run above).** Three causes, all fixed in code:
   requests' `HISTORY.md` uses underlined ("setext") Markdown headings, which the chunker did not
   recognise, so the 2.32.0 release notes were cut across two windows (each release is now one
   section); keyword search split "2.32.0" into "2", "32", "0"; and the small model never turned
@@ -528,11 +541,14 @@ tests/          unit + integration
 - **A small local model is slower and less capable than a frontier model.** On a 4 GB laptop GPU an
   agent answer takes about 45 s, and the 4B model sometimes plans weak queries, grades too strictly
   or reasons poorly over commit history; deterministic plan repair, verbatim baseline searches,
-  release/time-window tools and the "partial" status compensate, but history answers (0.57) are still
+  release/time-window tools and the "partial" status compensate, but history answers (0.64) are still
   the weakest category. More VRAM and a larger instruct model help the most.
-- **GPU passthrough on Docker Desktop (Windows/WSL2) can stall.** During long runs on the build
-  machine, Ollama occasionally hung with the GPU idle (once with a CUDA error). The provider retries
-  server errors, evals checkpoint and `--resume`, and `docker compose restart ollama` clears it; a
+- **GPU passthrough on Docker Desktop (Windows/WSL2) can stall, and long runs can crash the engine.**
+  During long runs on the build machine, Ollama occasionally hung with the GPU idle (once with a CUDA
+  error), and in one eval Docker Desktop's engine stopped answering three times under memory pressure
+  (stopping the containers the eval does not need ended it). The provider retries server errors,
+  evals checkpoint and `--resume`, `docker compose restart ollama` clears a hang, and
+  `wsl --terminate docker-desktop` restarts a crashed engine without touching other WSL distros; a
   native Ollama install on Windows avoids the WSL2 layer.
 - The LLM judge in the eval is the same small local model, so correctness scores are a noisy signal;
   `badebhai eval --judge-model <larger model>` uses a stronger judge if you have one.
