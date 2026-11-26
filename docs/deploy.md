@@ -49,7 +49,7 @@ That link goes on your resume and in the README.
   re-downloaded (seconds).
 * **Model:** `LLM_MODEL=gemini-3.6-flash`. When it is overloaded (503) or out of daily quota, the
   next model in `OPENAI_FALLBACK_MODELS` (then the best Flash model the API lists) answers instead
-  for five minutes; a model with no free quota for your key is skipped for six hours.
+  for fifteen minutes; a model with no free quota for your key is skipped for six hours.
 * **Embeddings:** `BAAI/bge-small-en-v1.5` on the instance (ONNX, 384 dimensions). If you change the
   embedding model, re-run `scripts/index_into_neon.sh` with the same settings.
 * **Other APIs:** any OpenAI-compatible API works: Groq (`https://api.groq.com/openai/v1`, chat only)

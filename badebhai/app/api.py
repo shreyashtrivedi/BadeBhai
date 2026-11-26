@@ -110,9 +110,7 @@ def create_app(
         st = app.state
         st.settings = s
         st.pool = await asyncio.to_thread(get_pool, s)
-        st.embedder = get_embedder(s)
-        # Load the embedding model now, not during the first question (memory search embeds the query).
-        await asyncio.to_thread(st.embedder.embed_query, "warm up")
+        st.embedder = get_embedder(s)  # loaded in the background once clones are restored (_startup_repos)
         st.llm = llm or get_llm(s)
         st.jobs = {}
         st.started_at = time.time()
@@ -317,6 +315,12 @@ def create_app(
         """Restore missing clones, then index the auto-ingest repos one at a time: concurrent clones and
         embedding batches trip over each other and spike memory on a small instance."""
         await _restore_clones(app)
+        # Load the embedding model now, not during the first question, but after the clones: git and
+        # the model together can exceed a 512 MB instance.
+        try:
+            await asyncio.to_thread(app.state.embedder.embed_query, "warm up")
+        except Exception:
+            log.exception("could not load the embedding model")
         for source in sources:
             try:
                 job_id = await _auto_ingest(app, source)

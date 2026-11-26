@@ -44,8 +44,13 @@ from badebhai.log import get_logger
 log = get_logger(__name__)
 
 _MAX_429_WAIT_S = 45.0
-_STANDIN_FOR_S = 300.0  # an overloaded / out-of-quota model is skipped this long, then tried again
+_STANDIN_FOR_S = 900.0  # an overloaded / out-of-quota model is skipped this long, then tried again
 _NOT_CHAT = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo", "exp")
+# Gemini's current free chat models, used when OPENAI_FALLBACK_MODELS is unset (gemini-2.5-flash is
+# deprecated and often overloaded); one that is gone or not free for the key is skipped automatically.
+_GEMINI_STANDINS = (
+    "gemini-3.6-flash,gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview"
+)
 _UNUSABLE_FOR_S = 6 * 3600.0  # a stand-in that is gone, or has no free quota for this key
 _DAILY_QUOTA = re.compile(r"per\s*day|perday|daily", re.I)
 _NO_FREE_QUOTA = re.compile(r"limit:\s*0\b", re.I)  # Gemini: "... free_tier_requests, limit: 0"
@@ -149,7 +154,10 @@ class OpenAICompatProvider(LLMProvider):
         def usable(models: list[str]) -> str | None:
             return next((m for m in models if m != failing and self._down.get(m, 0) <= now), None)
 
-        configured = [m.strip() for m in (self.s.openai_fallback_models or "").split(",") if m.strip()]
+        fallbacks = self.s.openai_fallback_models
+        if fallbacks is None and "generativelanguage.googleapis.com" in (self.s.openai_base_url or ""):
+            fallbacks = _GEMINI_STANDINS
+        configured = [m.strip() for m in (fallbacks or "").split(",") if m.strip()]
         model = usable(configured)
         if model is None:
             listed = rank_standins(await self._model_ids(), failing.split("-")[0])

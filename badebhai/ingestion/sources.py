@@ -32,6 +32,30 @@ _REMOTE = re.compile(r"^(?:https?://|ssh://|git@)[^\s]+$")
 _CLONE_FILTER = os.environ.get("GIT_CLONE_FILTER", "").strip()
 # git runs at low priority on POSIX so it cannot starve the web server on a fractional-CPU host.
 _NICE = ["nice", "-n", "10"] if os.name == "posix" and shutil.which("nice") else []
+
+
+def _memory_limit_bytes() -> int | None:
+    """The container's memory limit (cgroup v2 or v1), or None when unlimited / not in a container."""
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if raw.isdigit() and int(raw) < 1 << 50:
+            return int(raw)
+    return None
+
+
+# On a small container git must not size itself to the host: index-pack starts one thread per host CPU
+# (a container sees them all), each with its own 96 MB delta-base cache, which alone can exceed 512 MB.
+_limit = _memory_limit_bytes()
+_LOW_MEMORY_GIT = (
+    ["-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "-c", "pack.windowMemory=32m"]
+    if os.environ.get("GIT_LOW_MEMORY", "").strip().lower() in ("1", "true", "yes")
+    or _CLONE_FILTER  # set for small hosted instances
+    or (_limit is not None and _limit < 2 << 30)
+    else []
+)
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
 
 
@@ -56,7 +80,7 @@ def git(
     cwd: Path | str, *args: str, timeout: float = 300, check: bool = True, token: str | None = None
 ) -> str:
     proc = subprocess.run(
-        [*_NICE, "git", "-c", "core.quotepath=off", *args],
+        [*_NICE, "git", "-c", "core.quotepath=off", *_LOW_MEMORY_GIT, *args],
         cwd=str(cwd),
         capture_output=True,
         timeout=timeout,
