@@ -145,3 +145,11 @@ CREATE TABLE IF NOT EXISTS bot_replies (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- One indexing run per repo at a time. A lease row rather than a session advisory lock, so it works
+-- behind connection poolers (Neon, pgbouncer) and a crashed run's lease simply expires.
+CREATE TABLE IF NOT EXISTS index_leases (
+    repo_id    INT PRIMARY KEY,
+    holder     TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);

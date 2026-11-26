@@ -47,22 +47,20 @@ def ensure_database(database_url: str) -> None:
 def ensure_schema(database_url: str, dim: int) -> None:
     ensure_database(database_url)
     sql_text = _SCHEMA.read_text(encoding="utf-8").replace("{dim}", str(int(dim)))
-    with psycopg.connect(database_url, autocommit=True) as conn:
-        # Serialize concurrent bootstraps (api + 3 MCP servers start together).
-        conn.execute("SELECT pg_advisory_lock(727001)")
-        try:
-            conn.execute(sql_text)
-            row = conn.execute(
-                "SELECT atttypmod FROM pg_attribute "
-                "WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"
-            ).fetchone()
-            if row and row[0] not in (-1, dim):
-                raise SchemaMismatch(
-                    f"chunks.embedding has dimension {row[0]} but EMBEDDING_DIM={dim}. "
-                    "Run `badebhai reset-db` (drops indexed data) or set EMBEDDING_DIM to match."
-                )
-        finally:
-            conn.execute("SELECT pg_advisory_unlock(727001)")
+    with psycopg.connect(database_url) as conn:
+        # Serialize concurrent bootstraps (api + 3 MCP servers start together). A transaction-scoped
+        # lock, released by COMMIT/ROLLBACK, so it cannot leak behind a connection pooler.
+        conn.execute("SELECT pg_advisory_xact_lock(727001)")
+        conn.execute(sql_text)
+        row = conn.execute(
+            "SELECT atttypmod FROM pg_attribute WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"
+        ).fetchone()
+        if row and row[0] not in (-1, dim):
+            raise SchemaMismatch(
+                f"chunks.embedding has dimension {row[0]} but EMBEDDING_DIM={dim}. "
+                "Run `badebhai reset-db` (drops indexed data) or set EMBEDDING_DIM to match."
+            )
+        conn.commit()
 
 
 def _configure(conn: psycopg.Connection) -> None:
@@ -113,7 +111,7 @@ def _drop_tables(database_url: str) -> None:
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute(
             "DROP TABLE IF EXISTS chunks, files, memories, feedback, answer_cache, repo_members, users, usage_events, "
-            "bot_replies, repos, "
+            "bot_replies, index_leases, repos, "
             "schema_meta CASCADE"
         )
 
@@ -125,6 +123,6 @@ def reset_database(settings: Settings | None = None) -> None:
     with psycopg.connect(s.database_url, autocommit=True) as conn:
         conn.execute(
             "DROP TABLE IF EXISTS chunks, files, memories, feedback, answer_cache, repo_members, users, usage_events, "
-            "bot_replies, repos, "
+            "bot_replies, index_leases, repos, "
             "schema_meta CASCADE"
         )

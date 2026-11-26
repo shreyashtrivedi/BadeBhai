@@ -12,10 +12,13 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import socket
 import stat
 import sys
 import time
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -43,6 +46,7 @@ from badebhai.log import get_logger
 log = get_logger(__name__)
 
 _EMBED_BATCH_CHUNKS = 256
+_LEASE_TTL_S = 300  # renewed after every embedded batch
 
 Progress = Callable[[str, int, int], None]  # (stage, done, total): "downloading" | "indexing"
 
@@ -66,9 +70,6 @@ def _delete_managed_dir(path: Path, repos_dir: Path) -> bool:
     else:  # pragma: no cover
         shutil.rmtree(path, onerror=_force)
     return True
-
-
-_LOCK_BASE = 910_000
 
 
 @dataclass
@@ -192,14 +193,8 @@ class Indexer:
         repo = repo_db.get_repo(self.pool, repo_name)
         if repo is None:
             raise KeyError(f"unknown repo {repo_name!r}")
-        with self.pool.connection() as lock_conn:  # waits for any running index of this repo
-            lock_conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_BASE + repo.id,))
-            lock_conn.commit()
-            try:
-                counts = repo_db.remove_repo(self.pool, repo.id, repo.name, delete_memories)
-            finally:
-                lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_BASE + repo.id,))
-                lock_conn.commit()
+        with self._lease(repo.id):  # waits for any running index of this repo
+            counts = repo_db.remove_repo(self.pool, repo.id, repo.name, delete_memories)
         removed_dirs = []
         if repo.managed:
             for path in (repo.local_path, repo.wiki_path):
@@ -207,6 +202,41 @@ class Indexer:
                     removed_dirs.append(path)
         log.info("repo removed", extra={"repo": repo.name, **counts})
         return {"repo": repo.name, **counts, "deleted_clone": bool(removed_dirs)}
+
+    @contextmanager
+    def _lease(self, repo_id: int, wait_s: float = 1800.0):
+        """Hold the repo's indexing lease (a row with an expiry, renewed while we work). Works behind
+        connection poolers, and a crashed holder's lease lapses after LEASE_TTL_S."""
+        holder = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        deadline = time.monotonic() + wait_s
+        while True:
+            with self.pool.connection() as conn:
+                got = conn.execute(
+                    "INSERT INTO index_leases (repo_id, holder, expires_at) "
+                    "VALUES (%s, %s, now() + make_interval(secs => %s)) "
+                    "ON CONFLICT (repo_id) DO UPDATE SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at "
+                    "WHERE index_leases.expires_at < now() RETURNING holder",
+                    (repo_id, holder, _LEASE_TTL_S),
+                ).fetchone()
+            if got:
+                break
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"another indexing run of repo {repo_id} is still working")
+            time.sleep(2)
+
+        def renew() -> None:
+            with self.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE index_leases SET expires_at = now() + make_interval(secs => %s) "
+                    "WHERE repo_id = %s AND holder = %s",
+                    (_LEASE_TTL_S, repo_id, holder),
+                )
+
+        try:
+            yield renew
+        finally:
+            with self.pool.connection() as conn:
+                conn.execute("DELETE FROM index_leases WHERE repo_id = %s AND holder = %s", (repo_id, holder))
 
     # ---------------- core ----------------
     def _wiki_files(self, repo: repo_db.RepoRecord) -> list[str]:
@@ -228,14 +258,12 @@ class Indexer:
     ) -> IndexReport:
         t0 = time.perf_counter()
         report = IndexReport(repo=repo.name, mode=mode)
-        with self.pool.connection() as lock_conn:
-            lock_conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_BASE + repo.id,))
-            lock_conn.commit()
+        with self._lease(repo.id) as renew:
+            self._renew = renew
             try:
                 self._reindex_locked(repo, candidates, report, progress or _no_progress)
             finally:
-                lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_BASE + repo.id,))
-                lock_conn.commit()
+                self._renew = None
         report.seconds = round(time.perf_counter() - t0, 2)
         log.info("index complete", extra={k: v for k, v in report.to_dict().items() if k != "changed_paths"})
         return report
@@ -333,6 +361,8 @@ class Indexer:
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s))",
                     rows,
                 )
+        if getattr(self, "_renew", None):
+            self._renew()
         report.files_indexed += len(files)
         report.chunks_written += len(rows)
         report.changed_paths.extend(f.path for f in files)

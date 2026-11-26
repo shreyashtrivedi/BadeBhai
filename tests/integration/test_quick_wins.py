@@ -177,3 +177,20 @@ def test_changed_embedding_size_rebuilds_when_allowed(db_settings, tiny_repo):
     with get_pool(allowed).connection() as conn:  # rebuilt empty, no deadlock
         assert conn.execute("SELECT count(*) FROM repos").fetchone()[0] == 0
     close_pools()
+
+
+def test_index_lease_respects_live_holders_and_takes_over_expired_ones(db_settings, tiny_repo):
+    """A lease row instead of a session lock: safe behind connection poolers; a crashed run's lease lapses."""
+    idx = Indexer(db_settings)
+    idx.ingest(str(tiny_repo), name="tiny")
+    pool = get_pool(db_settings)
+    with pool.connection() as conn:
+        conn.execute("INSERT INTO index_leases VALUES (1, 'live', now() + interval '5 minutes')")
+    with pytest.raises(TimeoutError), idx._lease(1, wait_s=0.5):
+        pass
+    with pool.connection() as conn:
+        conn.execute("UPDATE index_leases SET expires_at = now() - interval '1 second'")  # the holder crashed
+    with idx._lease(1, wait_s=1):
+        pass
+    with pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM index_leases").fetchone()[0] == 0  # released
