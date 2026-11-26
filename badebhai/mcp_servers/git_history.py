@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,21 @@ def _check_date(value: str | None, name: str) -> str | None:
     if not _DATE.match(value) or value.lstrip().startswith("-"):
         raise ToolError(f"{name} must look like a date ('2024-05-01', '2 weeks ago')", "bad_arguments")
     return value
+
+
+_RELATIVE = re.compile(r"^\s*(\d{1,4})\s+(day|week|month|year)s?\s+ago\s*$", re.I)
+_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+
+
+def _from_head(value: str | None, head_iso: str | None) -> str | None:
+    """'N days/weeks/months/years ago' counted back from the repo's newest commit (an ISO date)."""
+    if not value or not head_iso or not (m := _RELATIVE.match(value)):
+        return value
+    try:
+        head = datetime.fromisoformat(head_iso)
+    except ValueError:
+        return value
+    return (head - timedelta(days=int(m.group(1)) * _UNIT_DAYS[m.group(2).lower()])).date().isoformat()
 
 
 def _check_path(path: str | None) -> str | None:
@@ -311,21 +327,32 @@ class GitHistory:
         limit: int = 20,
     ) -> dict:
         r = self.deps.repo(repo)
-        args = ["-n", str(clamp(limit, 1, 50, 20))]
-        if s := _check_date(since, "since"):
-            args.append(f"--since={s}")
-        if u := _check_date(until, "until"):
-            args.append(f"--until={u}")
-        if p := _check_path(path_prefix):
-            args += ["--", p]
-        commits = self._log(r, args)
+        head = self._head_date(r)
+        n = ["-n", str(clamp(limit, 1, 50, 20))]
+        window: list[str] = []
+        # "30 days ago" means before the snapshot's newest commit, not before today: an indexed repo
+        # pinned to an old release would otherwise have no "recent" changes at all.
+        if s := _check_date(_from_head(since, head), "since"):
+            window.append(f"--since={s}")
+        if u := _check_date(_from_head(until, head), "until"):
+            window.append(f"--until={u}")
+        paths = ["--", p] if (p := _check_path(path_prefix)) else []
+        commits = self._log(r, [*n, *window, *paths])
+        latest_instead = False
+        if not commits and window and not until:  # nothing in the window: show the latest commits instead
+            commits, latest_instead = self._log(r, [*n, *paths]), True
         touched = Counter(
             f for c in commits for f in c["files"] if not path_prefix or f.startswith(path_prefix)
         )
         return {
             "repo": r.name,
-            "repo_head_date": self._head_date(r),
+            "repo_head_date": head,
             "window": {"since": since, "until": until, "path_prefix": path_prefix},
+            **(
+                {"note": "no commits in that window; these are the latest commits instead"}
+                if latest_instead
+                else {}
+            ),
             "summary": {"commits": len(commits), "top_files": touched.most_common(15)},
             "items": [self._commit_item(r, c) for c in commits],
         }

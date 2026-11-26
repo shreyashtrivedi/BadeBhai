@@ -146,12 +146,24 @@ def release_calls(question: str, tools) -> list[dict]:
                     "args": {"version": v, **({"path": path} if path else {})},
                 }
             )
-    if (win := parse_window(question)) and "recent_changes" in tools:
-        args = {"since": win[0], "limit": 30, **({"until": win[1]} if win[1] else {})}
+    win = parse_window(question)
+    if "recent_changes" in tools and (win or (not versions and _RECENT_Q.search(question))):
+        # a named window as given; "recently" / "latest" = the last 90 days before the snapshot's newest
+        # commit (the tool falls back to the latest commits when that window is empty)
+        args = (
+            {"since": win[0], "limit": 30, **({"until": win[1]} if win[1] else {})}
+            if win
+            else {"since": "90 days ago", "limit": 30}
+        )
         if path:
             args["path_prefix"] = path.rstrip("/")
         calls.append({"tool": "recent_changes", "args": args})
     return calls
+
+
+_RECENT_Q = re.compile(
+    r"(?i)\b(recent(ly)?|lately|latest (changes?|commits?)|newest|last (few|couple of|several) (commits?|changes?|weeks?|months?))\b"
+)
 
 
 _OVERVIEW_Q = re.compile(
