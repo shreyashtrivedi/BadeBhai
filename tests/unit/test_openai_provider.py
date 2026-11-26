@@ -200,7 +200,7 @@ async def test_every_model_busy_reports_what_was_tried(monkeypatch):
         return httpx.Response(503, json={"error": {"message": "high demand"}})
 
     p = _provider(handler, llm_model="main", openai_fallback_models="backup")
-    with pytest.raises(Exception, match=r"503 \(tried main: 503; backup: 503"):
+    with pytest.raises(Exception, match=r"kept refusing t \(main: 503; backup: 503; main: 503"):
         await p.complete(purpose="t", system="s", messages=[])
 
 
@@ -274,6 +274,30 @@ async def test_hung_model_falls_back_to_a_standin(monkeypatch):
     )
     assert out == "from backup"
     assert used == ["main", "backup", "main", "backup"]
+
+
+async def test_brief_blips_on_every_model_still_get_an_answer(monkeypatch):
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", fake_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":  # the API also lists models that cannot serve: never use them
+            return httpx.Response(200, json={"data": [{"id": "models/listed-but-overloaded"}]})
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if len(used) <= 2:  # both models blip once
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return _reply("ok")
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="backup")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "ok"
+    assert used == ["main", "backup", "main"]  # waited for main to come back instead of giving up
+    assert "listed-but-overloaded" not in used and slept and max(slept) <= 8.0
 
 
 async def test_retired_model_is_replaced_by_a_current_flash_model():

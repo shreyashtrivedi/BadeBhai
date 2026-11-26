@@ -44,7 +44,8 @@ from badebhai.log import get_logger
 log = get_logger(__name__)
 
 _MAX_429_WAIT_S = 45.0
-_STANDIN_FOR_S = 900.0  # an overloaded / out-of-quota model is skipped this long, then tried again
+_STANDIN_FOR_S = 60.0  # an overloaded / out-of-quota model rests this long (free-tier 503s are brief blips)
+_MAX_REST_WAIT_S = 8.0  # when every fallback is resting, wait at most this long for the first to return
 _NOT_CHAT = ("embed", "image", "tts", "audio", "live", "vision", "aqa", "learnlm", "imagen", "veo", "exp")
 # Gemini free-tier models that answered structured and streamed requests on 2026-11-26, best first; used
 # when OPENAI_FALLBACK_MODELS is unset. (gemini-2.5-flash: 404 for new users; 3.5/3.7/3.6/3.8-flash and
@@ -104,7 +105,7 @@ class OpenAICompatProvider(LLMProvider):
     def _timeout_s(self) -> float:
         """Gemini's free tier sometimes hangs instead of answering 503: give up sooner and use a stand-in."""
         if "generativelanguage.googleapis.com" in (self.s.openai_base_url or ""):
-            return min(self.s.openai_timeout_s, 45.0)
+            return min(self.s.openai_timeout_s, 30.0)
         return self.s.openai_timeout_s
 
     @property
@@ -169,8 +170,12 @@ class OpenAICompatProvider(LLMProvider):
         return choice
 
     async def _pick_standin(self, failing: str, why: str, skip_for_s: float = _STANDIN_FOR_S) -> str | None:
-        """`failing` is overloaded or out of quota: skip it for a while and answer with another model,
-        from OPENAI_FALLBACK_MODELS first, then the best other chat models the API lists."""
+        """`failing` is overloaded or out of quota: skip it for a while and answer with another model.
+
+        With a fallback list (OPENAI_FALLBACK_MODELS, or the verified Gemini list) only those models and
+        the configured one take turns; free-tier 503s are brief blips, so when every one of them is
+        resting we wait for the first to come back rather than give up or wander off to models the API
+        lists but cannot serve. Without a list, the best other chat models the API lists are tried."""
         now = time.monotonic()
         self._down[failing] = now + skip_for_s
 
@@ -178,13 +183,23 @@ class OpenAICompatProvider(LLMProvider):
             return next((m for m in models if m != failing and self._down.get(m, 0) <= now), None)
 
         configured = self._fallbacks()
-        model = usable(configured)
-        if model is None:
+        if configured:
+            pool = list(dict.fromkeys([self._replacement or self.s.main_model, *configured]))
+            model = usable(pool)
+            if model is None:  # all resting: wait for the soonest back (never for a gone / no-quota one)
+                resting = [m for m in pool if self._down.get(m, 0) - now <= _STANDIN_FOR_S]
+                if resting:
+                    model = min(resting, key=lambda m: (m == failing, self._down.get(m, 0)))
+                    await asyncio.sleep(min(_MAX_REST_WAIT_S, max(0.0, self._down.get(model, 0) - now)))
+                    self._down.pop(model, None)
+        else:
             listed = rank_standins(await self._model_ids(), failing.split("-")[0])
-            model = usable([m for m in listed if m not in configured])
+            model = usable(listed)
         if model is None:
             log.warning("model busy and no stand-in left", extra={"busy": failing, "why": why})
             return None
+        if model == failing:
+            return model
         log.warning("model busy; using a stand-in", extra={"busy": failing, "using": model, "why": why})
         self._standin[failing] = model
         return model
