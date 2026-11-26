@@ -248,6 +248,34 @@ async def test_stream_on_overloaded_model_answers_from_a_standin(monkeypatch):
     assert used == ["main", "backup"]  # the busy model is not asked twice
 
 
+async def test_hung_model_falls_back_to_a_standin(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("badebhai.llm.openai_provider.asyncio.sleep", no_sleep)
+    used = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        used.append(model)
+        if model == "main":
+            raise httpx.ReadTimeout("hung", request=request)
+        return _reply("from backup")
+
+    p = _provider(handler, llm_model="main", openai_fallback_models="backup")
+    assert await p.complete(purpose="t", system="s", messages=[]) == "from backup"
+    out = "".join(
+        [
+            x
+            async for x in _provider(handler, llm_model="main", openai_fallback_models="backup").stream(
+                purpose="t", system="s", messages=[]
+            )
+        ]
+    )
+    assert out == "from backup"
+    assert used == ["main", "backup", "main", "backup"]
+
+
 async def test_retired_model_is_replaced_by_a_current_flash_model():
     used = []
 

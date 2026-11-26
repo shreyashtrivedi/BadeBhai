@@ -100,6 +100,13 @@ class OpenAICompatProvider(LLMProvider):
             FREE_MODEL_PREFIXES.append("openai-compat/")
 
     @property
+    def _timeout_s(self) -> float:
+        """Gemini's free tier sometimes hangs instead of answering 503: give up sooner and use a stand-in."""
+        if "generativelanguage.googleapis.com" in (self.s.openai_base_url or ""):
+            return min(self.s.openai_timeout_s, 45.0)
+        return self.s.openai_timeout_s
+
+    @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
             headers = {"Content-Type": "application/json"}
@@ -108,7 +115,7 @@ class OpenAICompatProvider(LLMProvider):
             self._client = httpx.AsyncClient(
                 base_url=self.s.openai_base_url.rstrip("/") + "/",
                 headers=headers,
-                timeout=httpx.Timeout(self.s.openai_timeout_s, connect=10.0),
+                timeout=httpx.Timeout(self._timeout_s, connect=10.0),
                 transport=self._transport,
             )
         return self._client
@@ -232,8 +239,13 @@ class OpenAICompatProvider(LLMProvider):
             except httpx.ConnectError as e:
                 raise LLMUnavailable(f"Cannot reach the model API at {self.s.openai_base_url}") from e
             except httpx.TimeoutException as e:
+                tried.append(f"{model}: timeout")
+                standin = await self._pick_standin(model, "timed out")  # a hung model is a busy one
+                if standin:
+                    body, model = {**body, "model": standin}, standin
+                    continue
                 raise LLMError(
-                    f"The model API timed out after {self.s.openai_timeout_s:.0f}s on {purpose}"
+                    f"The model API timed out after {self._timeout_s:.0f}s on {purpose} (tried {'; '.join(tried)})"
                 ) from e
             if r.status_code < 400:
                 data = r.json()
@@ -347,6 +359,7 @@ class OpenAICompatProvider(LLMProvider):
         }
         filt = _ThinkFilter()
         await self._throttle()
+        streamed = False
         with Timer() as t:
             try:
                 async with self.client.stream("POST", "chat/completions", json=body) as r:
@@ -377,10 +390,20 @@ class OpenAICompatProvider(LLMProvider):
                         for choice in obj.get("choices") or []:
                             piece = filt.feed((choice.get("delta") or {}).get("content") or "")
                             if piece:
+                                streamed = True
                                 yield piece
                     tail = filt.flush()
                     if tail:
                         yield tail
             except httpx.ConnectError as e:
                 raise LLMUnavailable(f"Cannot reach the model API at {self.s.openai_base_url}") from e
+            except httpx.TimeoutException:
+                if streamed:
+                    raise
+                # the model hung before answering: answer from a stand-in instead
+                await self._pick_standin(model, "timed out")
+                yield await self.complete(
+                    purpose=purpose, system=system, messages=messages, fast=fast, max_tokens=max_tokens
+                )
+                return
         self._record(purpose, model, usage, t.ms)
