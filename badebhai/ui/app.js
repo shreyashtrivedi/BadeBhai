@@ -584,19 +584,24 @@ function initDemo() {
   banner.innerHTML = state.setup.tour
     ? `<strong>Recorded tour.</strong> Real answers recorded from a running BadeBhai${model ? " (" + model.replace(/^ Answers by /, "").replace(/\.$/, "") + ")" : ""}: pick an example question, then click citations, open the trace or the codebase map.
        ${live ? `<a href="${esc(live)}" target="_blank" rel="noopener noreferrer">Ask your own question on the live demo</a> · ` : ""}<a href="${esc(src)}" target="_blank" rel="noopener noreferrer">Source &amp; run your own</a>`
-    : `<strong>Live demo.</strong> Ask anything about the repositories in the Repo menu.${model}
-    For any other repo, private code, or a fully local model, <a href="${esc(src)}" target="_blank" rel="noopener noreferrer">run your own copy</a> (free).`;
+    : `<strong>Live demo</strong> on a free server: two pre-indexed repositories (pick one in the Repo menu), every feature.${model}
+    To add and remove your own repositories without limits, <button type="button" class="link" data-open-local>run it on your machine</button> (free, three commands).`;
   banner.hidden = false;
+  const local = $("#local-dialog");
+  const openLocal = () => { if (!local.open) local.showModal(); };
+  $("#local-close").addEventListener("click", () => local.close());
+  local.addEventListener("click", (e) => { if (e.target === local) local.close(); });
+  $("#local-source").href = src;
   const add = $("#add-repo");
-  add.textContent = "Run your own ↗";
-  add.title = "BadeBhai is free and open source: run it on your machine for any repository";
-  add.replaceWith(add.cloneNode(true));  // drop the "open dialog" handler
-  $("#add-repo").addEventListener("click", () => window.open(src, "_blank", "noopener"));
+  add.textContent = "+ Add your own repo";
+  add.title = "Adding repositories works in your own copy: see how to run it";
+  add.replaceWith(add.cloneNode(true));  // drop the "open add dialog" handler
+  $("#add-repo").addEventListener("click", openLocal);
+  banner.querySelectorAll("[data-open-local]").forEach((b) => b.addEventListener("click", openLocal));
   document.querySelectorAll("[data-open-add]").forEach((b) => {
-    const link = document.createElement("a");
-    link.href = src; link.target = "_blank"; link.rel = "noopener noreferrer";
-    link.textContent = "run your own copy";
-    b.replaceWith(link);
+    const copy = b.cloneNode(true);  // drop the "open add dialog" handler
+    copy.addEventListener("click", openLocal);
+    b.replaceWith(copy);
   });
 }
 

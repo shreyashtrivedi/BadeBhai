@@ -454,8 +454,9 @@ def create_app(
         return {"auth_enabled": s.auth_enabled, "user": user.to_public() if user else None}
 
     @app.get("/setup")
-    async def setup() -> dict[str, Any]:
+    async def setup(request: Request) -> dict[str, Any]:
         """What the web UI needs to guide someone adding a repo. Never includes the token itself."""
+        llm_now = getattr(request.app.state, "llm", None)
         return {
             "github_token": bool(s.github_token),
             "allow_local_paths": s.api_allow_local_paths,
@@ -463,7 +464,7 @@ def create_app(
             "token_url": TOKEN_URL,
             "demo_mode": s.demo_mode,
             "source_url": s.demo_source_url,
-            "model": s.main_model,
+            "model": getattr(llm_now, "current_model", None) or s.main_model,  # after any fallback
         }
 
     @app.get("/repos")

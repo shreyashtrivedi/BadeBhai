@@ -121,6 +121,11 @@ class OpenAICompatProvider(LLMProvider):
             )
         return self._client
 
+    @property
+    def current_model(self) -> str:
+        """The model answering now: the configured one, or its replacement / stand-in."""
+        return self._model(False)
+
     def _model(self, fast: bool) -> str:
         model = self._replacement or (self.s.fast_model if fast else self.s.main_model)
         for _ in range(5):  # follow stand-ins while the model they replace is still being skipped

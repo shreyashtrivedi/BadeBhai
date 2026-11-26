@@ -119,6 +119,45 @@
     </div>
   </dialog>
 
+  <dialog id="local-dialog" aria-labelledby="local-title">
+    <div class="add">
+      <div class="add-head">
+        <h2 id="local-title">Run BadeBhai on your own machine</h2>
+        <button type="button" class="close" id="local-close" aria-label="Close">&times;</button>
+      </div>
+      <p class="hint">This live demo runs on a free 512 MB server, so its two repositories were indexed in advance
+        and are fixed. Every feature works on them: cited answers, the code viewer, the codebase map, commit
+        history and repo comparison. A copy on your machine has none of those limits.</p>
+      <div class="compare-cols">
+        <div>
+          <h3>This live demo</h3>
+          <ul>
+            <li>psf/requests and sindresorhus/ky, ready to ask</li>
+            <li>All features, including comparing the two repos</li>
+            <li>A few questions per visitor per hour (free model quota)</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Your own copy (free)</h3>
+          <ul>
+            <li><strong>Add and remove any repositories</strong>, including private ones</li>
+            <li>Compare any of them</li>
+            <li>A local model and embeddings: no API keys, no limits, your code never leaves your machine</li>
+            <li>Uses your GPU if you have one</li>
+          </ul>
+        </div>
+      </div>
+      <h3>Three commands</h3>
+      <pre class="cmd"><code>git clone https://github.com/shreyashtrivedi/BadeBhai
+cd BadeBhai
+docker compose up --build</code></pre>
+      <p class="hint small">With an NVIDIA GPU, use
+        <code>docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build</code> instead.
+        Then open <code>http://localhost:8000</code> and click <strong>+ Add repo</strong>.
+        <a id="local-source" href="https://github.com/shreyashtrivedi/BadeBhai" target="_blank" rel="noopener noreferrer">Full guide on GitHub ↗</a></p>
+    </div>
+  </dialog>
+
   <dialog id="login-dialog" aria-labelledby="login-title">
     <form id="login-form" class="login">
       <h2 id="login-title"><span class="logo" aria-hidden="true">◆</span> Sign in to BadeBhai</h2>
