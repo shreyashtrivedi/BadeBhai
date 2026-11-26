@@ -123,7 +123,9 @@ def main() -> None:
     ap.add_argument("--base", default="http://localhost:8000")
     ap.add_argument("--live-url", default=None)
     ap.add_argument("--build-only", action="store_true", help="rebuild tour/site from tour/recorded.js")
-    ap.add_argument("--out", default=None, help="write the recording here instead of tour/recorded.js (no site build)")
+    ap.add_argument(
+        "--out", default=None, help="write the recording here instead of tour/recorded.js (no site build)"
+    )
     args = ap.parse_args()
     if not args.build_only:
         data = record(args.base, args.live_url)
