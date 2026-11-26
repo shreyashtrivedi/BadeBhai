@@ -120,6 +120,9 @@ function showTab(name) {
 }
 function setStatus(text, isError = false) { const s = $("#status"); s.textContent = text; s.classList.toggle("error", isError); }
 
+// On a phone the page itself scrolls (see styles.css); the message list is not a scroll box there.
+const isPhone = () => window.matchMedia("(max-width: 720px)").matches;
+
 // ---------------------------------------------------------------- asking (SSE over fetch)
 async function ask() {
   const question = $("#question").value.trim();
@@ -142,7 +145,8 @@ async function ask() {
   holder.dataset.question = question;
   holder.innerHTML = `<div class="bubble streaming">…</div>`;
   msgs.appendChild(holder);
-  msgs.scrollTop = msgs.scrollHeight;
+  if (isPhone()) holder.previousElementSibling?.scrollIntoView({ behavior: "smooth", block: "start" });
+  else msgs.scrollTop = msgs.scrollHeight;
   const bubble = holder.querySelector(".bubble");
   resetTrace();
   setStatus("Thinking…");
@@ -178,7 +182,7 @@ async function ask() {
         if (ev.event === "start") store.set(threadKey(), ev.data.thread_id);
         else if (ev.event === "step") { addStep(ev.data); if (comparing) bubble.textContent = `${ev.data.summary}…`; }
         else if (ev.event === "tool") addTool(ev.data);
-        else if (ev.event === "token") { streamed += ev.data.text; bubble.textContent = streamed; msgs.scrollTop = msgs.scrollHeight; }
+        else if (ev.event === "token") { streamed += ev.data.text; bubble.textContent = streamed; if (!isPhone()) msgs.scrollTop = msgs.scrollHeight; }
         else if (ev.event === "final") renderFinal(holder, ev.data.response);
         else if (ev.event === "error") throw new Error(ev.data.error);
       }
@@ -600,8 +604,9 @@ function initDemo() {
   banner.innerHTML = state.setup.tour
     ? `<strong>Recorded tour.</strong> Real answers recorded from a running BadeBhai${model ? " (" + model.replace(/^ Answers by /, "").replace(/\.$/, "") + ")" : ""}: pick an example question, then click citations, open the trace or the codebase map.
        ${live ? `<a href="${esc(live)}" target="_blank" rel="noopener noreferrer">Ask your own question on the live demo</a> · ` : ""}<a href="${esc(src)}" target="_blank" rel="noopener noreferrer">Source &amp; run your own</a>`
-    : `<strong>Live demo</strong> on a free server: two pre-indexed repositories (pick one in the Repo menu), every feature.${model}
-    To add and remove your own repositories without limits, <button type="button" class="link" data-open-local>run it on your machine</button> (free, three commands).`;
+    : `<span class="long"><strong>Live demo</strong> on a free server: two pre-indexed repositories (pick one in the Repo menu), every feature.${model}
+    To add and remove your own repositories without limits, <button type="button" class="link" data-open-local>run it on your machine</button> (free, three commands).</span><span class="short"><strong>Live demo</strong> · two ready repos, every feature ·
+    <button type="button" class="link" data-open-local>run it locally</button> for your own repos</span>`;
   banner.hidden = false;
   const local = $("#local-dialog");
   const openLocal = () => { if (!local.open) local.showModal(); };

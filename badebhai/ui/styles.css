@@ -303,10 +303,47 @@ dialog#login-dialog::backdrop { background: var(--bg); }
 }
 .demo-banner a { color: var(--accent); font-weight: 600; }
 
+.demo-banner .short { display: none; }
+
 @media (max-width: 900px) {
   .add-row { flex-direction: column; }
   .add-row button { padding: 10px; }
   .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(240px, 40vh); }
   .chat { border-right: none; border-bottom: 1px solid var(--border); }
   .tagline { display: none; }
+}
+
+/* Phones: one scrolling page (compact header, the conversation at full width, the question box pinned
+   to the bottom of the screen, citations / trace / memory below the conversation). */
+@media (max-width: 720px) {
+  html, body { height: auto; }
+  body { display: block; }
+  .demo-banner { padding: 7px 14px; font-size: 13px; line-height: 1.4; }
+  .demo-banner .long { display: none; }
+  .demo-banner .short { display: inline; }
+  .topbar { padding: 8px 14px; gap: 8px; }
+  .brand { font-size: 16px; }
+  /* Header as a grid: Repo on its own row; "vs" and Mode; then the two buttons. */
+  .controls { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .controls label { font-size: 12.5px; min-width: 0; }
+  .controls select { flex: 1; min-width: 0; max-width: none; width: 100%; padding: 7px 8px; font-size: 14px; }
+  .controls label:first-child { grid-column: 1 / -1; }  /* Repo */
+  #user-label, #whoami { display: none !important; }  /* generated and remembered automatically */
+  #add-repo, #new-thread { width: 100%; padding: 8px 10px; }
+  #add-repo { order: 3; }
+  #new-thread { order: 4; }
+  .controls .compare { order: 1; }
+  .controls .mode { order: 2; }
+  .layout { display: block; }
+  .chat { border-bottom: 1px solid var(--border); min-height: 60vh; }
+  .messages { overflow: visible; padding: 16px 14px; }
+  .empty { margin-top: 3vh; }
+  .composer { position: sticky; bottom: 0; z-index: 5; padding: 10px 14px; gap: 8px; }
+  .composer textarea { min-height: 44px; font-size: 16px; }  /* 16px: iOS does not zoom into the field */
+  .composer button { padding: 0 16px; }
+  .status { padding: 0 14px 6px; }
+  .side { min-height: 40vh; }
+  .panel { overflow: visible; padding: 12px 14px 24px; }
+  pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
+  #local-dialog .add { padding: 16px 16px 18px; }
 }
